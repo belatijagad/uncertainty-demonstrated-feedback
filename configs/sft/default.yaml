@@ -1,0 +1,57 @@
+hydra:
+  run:
+    dir: outputs/sft
+
+seed: 42
+epochs: 20
+
+model:
+  name_or_path: "HuggingFaceTB/SmolLM3-3B"
+  adapter_name: "sft"
+  output_path: "experiments/sft/model"
+  device: "cuda"
+  use_bf16: true
+  attn_implementation: "flash_attention_2"
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - down_proj
+    - up_proj
+
+dataset:
+  name_or_path: "belati/ccat50"
+  batch_size: 4
+  max_length: 1024
+  num_workers: 0
+  author_id: 1
+  train_samples_per_author: 8
+  eval_samples_per_author: 4
+
+optimizer:
+  lr: 5.0e-5
+  weight_decay: 0.01
+
+scheduler:
+  warmup_steps: 100
+
+trainer:
+  sample_during_eval: true
+  epochs: 60
+  beta: 0.1
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 50
+  push_to_hub: true
+  repo_id: "belati/SmolLM3-3B_sft_author0"
+  gradient_accumulation_steps: 1
+  max_length: 512

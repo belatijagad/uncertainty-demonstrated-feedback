@@ -1,0 +1,70 @@
+commit_message: "Initial commit"
+seed: 42
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - down_proj
+    - up_proj
+
+model:
+  device: "cuda"
+  attn_implementation: "flash_attention_2" # "flash_attention_2" if cuda
+  name_or_path: "HuggingFaceTB/SmolLM3-3B" #"mistralai/Ministral-8B-Instruct-2410"
+  use_bf16: true
+
+wandb:
+  enabled: true
+  project: "ditto"
+  name: "SmolLM3-3B_ditto" #"ministral8binstruct_ditto"
+  group: "ditto"
+  tags: ["smollm3", "3b", "sanity-check", "negatice"]
+  notes: "DITTO training on HuggingFaceTB/SmolLM3-3B" #"DITTO training on Ministral-8B-Instruct-2410"
+
+dataset:
+  name_or_path: "belati/review-sentiment"
+  batch_size: 2
+  max_length: 512
+  num_workers: 0
+
+  num_eval_samples: 12
+
+optimizer:
+  lr: 5.0e-5 # x10 learning rate for LoRA, default was 5e-6
+  weight_decay: 0.01
+
+trainer:
+  sample_during_eval: true
+  epochs: 20
+  beta: 0.1
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 50
+  push_to_hub: false
+  repo_id: "belati/Ministral-8B-Instruct-2410_ditto"
+  gradient_accumulation_steps: 1
+  max_length: 512
+  use_vllm: false
+  vllm:
+    gpu_mem_util: 0.4
+    enable_sleep_mode: true
+    batch_size: 4
+    rescale_batch: 2
+    bootstrap_count: 4
+
+resample_rate: 50
+resample:
+  frac_expert: 0.7
+  frac_replay: 0.2
+  frac_noisy: 0.1
+  rescale_batch: 2
+  bootstrap_count: 4
