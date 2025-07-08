@@ -14,7 +14,7 @@
 
 - [] Implement algorithms
     - [] RLHF with PPO
-    - [] DPO (IPO loss and SimPO options)
+    - [x] DPO (IPO loss and SimPO options)
     - [] DITTO
     - [] UPO
     - [] UDITTO
@@ -28,13 +28,13 @@
         - [] UDITTO
     - [] Distributed training using FSDP
         - [] RLHF with PPO
-        - [] DPO
+        - [x] DPO
         - [] DITTO
         - [] UPO
         - [] UDITTO
     - [] Logging (logger, wandb)
         - [] RLHF with PPO
-        - [] DPO
+        - [x] DPO
         - [] DITTO
         - [] UPO
         - [] UDITTO
