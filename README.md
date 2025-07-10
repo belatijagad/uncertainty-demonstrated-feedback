@@ -12,30 +12,13 @@
 
 ## Implementation Roadmap
 
-- [ ] Implement algorithms
-    - [ ] RLHF with PPO
-    - [x] DPO (IPO loss and SimPO options)
-    - [ ] DITTO
-    - [ ] UPO
-    - [ ] UDITTO
+### Implement algorithms
+- [ ] DPO
+- [ ] DITTO
+- [ ] Uncertainty-enhanced DITTO
 
-- [ ] Miscellaneous
-    - [ ] vLLM for faster inference (in DPO's limitation since they don't use vLLM)
-        - [ ] RLHF with PPO
-        - [ ] DPO
-        - [ ] DITTO
-        - [ ] UPO
-        - [ ] UDITTO
-    - [ ] Distributed training using FSDP
-        - [ ] RLHF with PPO
-        - [x] DPO
-        - [ ] DITTO
-        - [ ] UPO
-        - [ ] UDITTO
-    - [ ] Logging (logger, wandb)
-        - [ ] RLHF with PPO
-        - [x] DPO
-        - [ ] DITTO
-        - [ ] UPO
-        - [ ] UDITTO
-    
+### Miscellaneous
+- [ ] Offline logging (logger)
+- [ ] Online logging (wandb)
+- [ ] Distributed training using FSDP
+- [ ] vLLM for faster inference
