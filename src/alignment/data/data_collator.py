@@ -1,4 +1,6 @@
-# Copyright 2023 The HuggingFace Team. All rights reserved.
+# DITTO Authors: Omar Shaikh, Michelle S. Lam, Joey Hejna, Yijia Shao, Hyundong Cho, Michael S. Bernstein, Diyi Yang 2024
+# DPO Authors: Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano Ermon, Christopher D. Manning, and Chelsea Finn 2023
+# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,223 +17,157 @@
 import torch
 from transformers import PreTrainedTokenizerBase
 from torch.nn.utils.rnn import pad_sequence
-
-from typing import Optional, Union, Any
+from typing import Any
 from dataclasses import dataclass
 
 @dataclass
 class SFTDataCollator:
+    """Data collator that applies the tokenizer's chat template for SFT."""
     tokenizer: PreTrainedTokenizerBase
     max_length: int
-    
+
     def __call__(self, features: list[dict]) -> dict:
+        formatted_texts = [self.tokenizer.apply_chat_template(f["messages"], tokenize=False, add_generation_prompt=False) for f in features]
+        
         batch = self.tokenizer(
-            [f["text"] for f in features],
+            formatted_texts,
             max_length=self.max_length,
             padding="max_length",
             truncation=True,
             return_tensors="pt"
         )
+        
         batch["labels"] = batch["input_ids"].clone()
-        
-        assistant_token_id = self.tokenizer.additional_special_tokens_ids[1]
-        
-        for i in range(len(features)):
-            labels = batch["labels"][i]
-            assistant_indices = (labels == assistant_token_id).nonzero(as_tuple=True)[0]
-            if len(assistant_indices) > 0:
-                last_assistant_idx = assistant_indices[-1]
-                labels[:last_assistant_idx + 1] = -100
+        for i, feature in enumerate(features):
+            prompt_turns = feature["messages"][:-1]
+            prompt_str = self.tokenizer.apply_chat_template(prompt_turns, tokenize=False, add_generation_prompt=True)
+            prompt_len = len(self.tokenizer(prompt_str, add_special_tokens=True).input_ids)
+            
+            batch["labels"][i, :prompt_len] = -100
 
         batch["labels"][batch["attention_mask"] == 0] = -100
         
         return batch
 
 @dataclass
-class DPODataCollatorWithPadding:
+class BaseDPOCollator:
+    r"""
+    DPO DataCollator class that pads the tokenized inputs to the maximum length of the batch.
+
+    Args:
+        pad_token_id (`int` defaults to 0):
+            The tokenizer's pad_token_id.
+        label_pad_token_id (`int`, defaults to -100):
+            The label used for masking.
+        is_encoder_decoder (`bool` or `None`, `optional`, defaults to `None`):
+            Whether you model has an encoder_decoder architecture.
+    """
+    """Base class for DPO-style collators that handles all tokenization and padding."""
     tokenizer: PreTrainedTokenizerBase
-    padding: Union[bool, str] = True
-    max_length: Optional[int] = None
-    max_prompt_length: Optional[int] = None
+    max_length: int
+    max_prompt_length: int
     label_pad_token_id: int = -100
-    padding_value: int = 0
-    truncation_mode: str = "keep_end"
-    max_target_length: Optional[int] = None
-    train_dataset = None
-                
-    def build_tokenized_answer(self, prompt, answer):
-        # Tokenize the full sequence once
-        full_tokenized = self.tokenizer(answer, add_special_tokens=False)
-        full_input_ids = full_tokenized["input_ids"]
 
-        # Tokenize the prompt separately to find the boundary
-        prompt_input_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+    def process_and_pad(self, list_of_triplets: list[tuple]) -> dict[str, Any]:
+        """Takes a list of (prompt, chosen, rejected) tuples and creates a padded batch."""
+        tokenized_batch = [self._tokenize_row(p, c, r) for p, c, r in list_of_triplets]
+        return self._collate_batch(tokenized_batch)
+
+    def _build_tokenized_answer(self, prompt: str, full_answer: str) -> dict:
+        """Helper to robustly find the split point between prompt and answer."""
+        full_tok = self.tokenizer(full_answer, add_special_tokens=False)
+        prompt_tok = self.tokenizer(prompt, add_special_tokens=False)
         
-        response_token_ids_start_idx = len(prompt_input_ids)
-        
-        # Handle tokenizer merge issue
-        if prompt_input_ids != full_input_ids[:response_token_ids_start_idx]:
-            response_token_ids_start_idx -= 1
+        start_idx = len(prompt_tok["input_ids"])
+        # Handle tokenizer merging issues
+        if prompt_tok["input_ids"] != full_tok["input_ids"][:start_idx]:
+            start_idx -= 1
             
-        # Recalculate prompt and answer splits with the correct index
-        prompt_input_ids = full_input_ids[:response_token_ids_start_idx]
-        prompt_attention_mask = full_tokenized["attention_mask"][:response_token_ids_start_idx]
+        return {
+            "prompt_input_ids": full_tok["input_ids"][:start_idx],
+            "input_ids": full_tok["input_ids"][start_idx:],
+        }
 
-        answer_input_ids = full_input_ids[response_token_ids_start_idx:]
-        answer_attention_mask = full_tokenized["attention_mask"][response_token_ids_start_idx:]
-
-        return dict(
-            prompt_input_ids=prompt_input_ids,
-            prompt_attention_mask=prompt_attention_mask,
-            input_ids=answer_input_ids,
-            attention_mask=answer_attention_mask,
-        )
-            
-    def tokenize_row(self, prompt, chosen, rejected):
-        """Tokenize a single row from a DPO specific dataset.
-
-        At this stage, we don't convert to PyTorch tensors yet; we just handle the truncation
-        in case the prompt + chosen or prompt + rejected responses is/are too long. First
-            we truncate the prompt; if we're still too long, we truncate the chosen/rejected.
-
-        We also create the labels for the chosen/rejected responses, which are of length equal to
-            the sum of the length of the prompt and the chosen/rejected response, with
-            label_pad_token_id  for the prompt tokens.
+    def _tokenize_row(self, prompt: str, chosen: str, rejected: str) -> dict:
         """
-        batch = {}
+        Tokenizes a single data point for DPO, creating input IDs, attention
+        masks, and labels for both the chosen and rejected sequences.
 
-        # Check issues below for more details
-        #  1. https://github.com/huggingface/trl/issues/907
-        #  2. https://github.com/EleutherAI/lm-evaluation-harness/pull/531#issuecomment-1595586257
-        #  3. https://github.com/LianjiaTech/BELLE/issues/337
+        This function handles the truncation of prompts and responses to
+        ensure the final sequences fit within the model's `max_length`.
 
-        if not isinstance(prompt, str): raise ValueError(f"prompt should be an str but got {type(prompt)}")
-        prompt_tokens = self.tokenizer(prompt, add_special_tokens=False)
-        prompt_tokens = {f"prompt_{k}": v for k, v in prompt_tokens.items()}
+        Args:
+            prompt (str): The conversational context or prompt.
+            chosen (str): The preferred or "chosen" response text.
+            rejected (str): The dispreferred or "rejected" response text.
 
-        if not isinstance(chosen, str): raise ValueError(f"chosen should be an str but got {type(chosen)}")
-        chosen_tokens = self.build_tokenized_answer(prompt, chosen)
+        Returns:
+            dict: A dictionary containing the tokenized and prepared inputs
+                  for a single DPO example. The keys are:
+                  - `chosen_input_ids`: Token IDs for the full chosen sequence.
+                  - `chosen_attention_mask`: Attention mask for the chosen sequence.
+                  - `chosen_labels`: Labels for the chosen sequence, with prompt tokens masked with -100.
+                  - `rejected_input_ids`: Token IDs for the full rejected sequence.
+                  - `rejected_attention_mask`: Attention mask for the rejected sequence.
+                  - `rejected_labels`: Labels for the rejected sequence, with prompt tokens masked with -100.
+        """
+        batch_element = {}
+        
+        prompt_tokens = {"prompt_input_ids": self.tokenizer(prompt, add_special_tokens=False)["input_ids"]}
+        chosen_tokens = self._build_tokenized_answer(prompt, prompt + chosen)
+        rejected_tokens = self._build_tokenized_answer(prompt, prompt + rejected)
 
-        if not isinstance(rejected, str): raise ValueError(f"rejected should be an str but got {type(rejected)}")
-        rejected_tokens = self.build_tokenized_answer(prompt, rejected)
-
-        chosen_prompt_len_input_ids = len(chosen_tokens["prompt_input_ids"])
-        rejected_prompt_len_input_ids = len(rejected_tokens["prompt_input_ids"])
-        prompt_len_input_ids = min(chosen_prompt_len_input_ids, rejected_prompt_len_input_ids)
-
+        # Truncate prompt if necessary
+        prompt_len = min(len(chosen_tokens["prompt_input_ids"]), len(rejected_tokens["prompt_input_ids"]))
         for k, v in prompt_tokens.items():
-            prompt_tokens[k] = v[:prompt_len_input_ids]
+            prompt_tokens[k] = v[:prompt_len]
 
-        # Make sure prompts only have one different token at most an
-        # and length only differs by 1 at most
-        num_diff_tokens = sum(
-            [a != b for a, b in zip(chosen_tokens["prompt_input_ids"], rejected_tokens["prompt_input_ids"])]
-        )
-        num_diff_len = abs(chosen_prompt_len_input_ids - rejected_prompt_len_input_ids)
-        
-        if num_diff_tokens > 1 or num_diff_len > 1:
-            raise ValueError(
-                "Chosen and rejected prompt_input_ids might only differ on the "
-                "last token due to tokenizer merge ops."
-            )
+        # Truncate responses if necessary
+        longer_response = max(len(chosen_tokens["input_ids"]), len(rejected_tokens["input_ids"]))
+        max_response_len = self.max_length - self.max_prompt_length
+        for tokens in [chosen_tokens, rejected_tokens]:
+            if len(tokens["prompt_input_ids"]) + longer_response > self.max_length:
+                tokens["input_ids"] = tokens["input_ids"][:max_response_len]
 
-        # bos and eos are already added.
+        # Combine and create labels for chosen and rejected
+        for type_key, p_toks, r_toks in [("chosen", prompt_tokens, chosen_tokens), ("rejected", prompt_tokens, rejected_tokens)]:
+            input_ids = p_toks["prompt_input_ids"] + r_toks["input_ids"]
+            labels = ([-100] * len(p_toks["prompt_input_ids"])) + r_toks["input_ids"]
+            
+            batch_element[f"{type_key}_input_ids"] = input_ids
+            batch_element[f"{type_key}_labels"] = labels
+            batch_element[f"{type_key}_attention_mask"] = [1] * len(input_ids)
+            
+        return batch_element
 
-        longer_response_length = max(len(chosen_tokens["input_ids"]), len(rejected_tokens["input_ids"]))
-
-        # if combined sequence is too long, truncate the prompt
-        for answer_tokens in [chosen_tokens, rejected_tokens, prompt_tokens]:
-            if len(answer_tokens["prompt_input_ids"]) + longer_response_length > self.max_length:
-                if self.truncation_mode == "keep_start":
-                    for k in ["prompt_input_ids", "prompt_attention_mask"]:
-                        answer_tokens[k] = answer_tokens[k][: self.max_prompt_length]
-                elif self.truncation_mode == "keep_end":
-                    for k in ["prompt_input_ids", "prompt_attention_mask"]:
-                        answer_tokens[k] = answer_tokens[k][-self.max_prompt_length :]
-                else:
-                    raise ValueError(f"Unknown truncation mode: {self.truncation_mode}")
-
-        for answer_tokens in [chosen_tokens, rejected_tokens]:
-            if len(answer_tokens["prompt_input_ids"]) + longer_response_length > self.max_length:
-                for k in ["input_ids", "attention_mask"]:
-                    answer_tokens[k] = answer_tokens[k][: self.max_length - self.max_prompt_length]
-
-        chosen_sequence_tokens = {
-            k: chosen_tokens[f"prompt_{k}"] + chosen_tokens[k] for k in ["input_ids", "attention_mask"]
-        }
-        rejected_sequence_tokens = {
-            k: rejected_tokens[f"prompt_{k}"] + rejected_tokens[k] for k in ["input_ids", "attention_mask"]
-        }
-        chosen_sequence_tokens["labels"] = chosen_sequence_tokens["input_ids"][:]
-        chosen_sequence_tokens["labels"][: len(chosen_tokens["prompt_input_ids"])] = [
-            self.label_pad_token_id
-        ] * len(chosen_tokens["prompt_input_ids"])
-        rejected_sequence_tokens["labels"] = rejected_sequence_tokens["input_ids"][:]
-        rejected_sequence_tokens["labels"][: len(rejected_tokens["prompt_input_ids"])] = [
-            self.label_pad_token_id
-        ] * len(rejected_tokens["prompt_input_ids"])
-
-        for k, toks in {
-            "chosen_": chosen_sequence_tokens,
-            "rejected_": rejected_sequence_tokens,
-            "": prompt_tokens,
-        }.items():
-            for type_key, tokens in toks.items():
-                if type_key == "token_type_ids":
-                    continue
-                batch[f"{k}{type_key}"] = tokens
-
-        return batch
-        
-    def collate(self, batch):
+    def _collate_batch(self, tokenized_batch: list[dict]) -> dict:
+        """Pads a batch of tokenized examples."""
         padded_batch = {}
-        
-        for key in batch[0].keys():
-            if key.endswith(("_input_ids", "_attention_mask", "_labels")):
+        for key in tokenized_batch[0].keys():
+            if "prompt" in key: continue # Skip prompts for now, handled in main sequences
                 
-                if key.endswith("_input_ids"):
-                    padding_value = self.tokenizer.pad_token_id
-                elif key.endswith("_labels"):
-                    padding_value = self.label_pad_token_id
-                else:
-                    padding_value = 0
-                
-                sequences = [torch.LongTensor(sample[key]) for sample in batch]
-                padded_batch[key] = pad_sequence(
-                    sequences, 
-                    batch_first=True, 
-                    padding_value=padding_value, 
-                    padding_side='left'
-                )
-                
-            else:
-                padded_batch[key] = [sample[key] for sample in batch]
-                
+            padding_value = 0
+            if key.endswith("input_ids"): padding_value = self.tokenizer.pad_token_id
+            elif key.endswith("labels"): padding_value = self.label_pad_token_id
+            
+            to_pad = [torch.LongTensor(ex[key]) for ex in tokenized_batch]
+            padded_batch[key] = pad_sequence(to_pad, batch_first=True, padding_value=padding_value)
+            
         return padded_batch
-
-    def _format_chat_template(self, turns: list[dict]):
-        text = ""
-        for turn in turns:
-            if turn['role'] == 'user':
-                text += f"<|prompter|>{turn['content']}<|endoftext|>"
-            elif turn['role'] == 'assistant':
-                text += f"<|assistant|>{turn['content']}<|endoftext|>"
-        return text
-            
-    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
-        tokenized_batch = []
-        
+    
+@dataclass
+class OfflineDPODataCollator(BaseDPOCollator):
+    """
+    Collator for standard offline DPO. It reads (prompt, chosen, rejected)
+    from a static dataset and uses the base class to process them.
+    """
+    def __call__(self, features: list[dict]) -> dict:
+        triplets = []
         for feature in features:
-            prompt_turns = feature["chosen"][:-1]
+            prompt = feature["prompt"]
+            chosen = feature["chosen"]
+            rejected = feature["rejected"]
+            triplets.append((prompt, chosen, rejected))
             
-            prompt_str = self._format_chat_template(prompt_turns) + "<|assistant|>"
-
-            chosen_response = feature["chosen"][-1]["content"] + "<|endoftext|>"
-            rejected_response = feature["rejected"][-1]["content"] + "<|endoftext|>"
-            
-            batch_element = self.tokenize_row(prompt_str, prompt_str + chosen_response, prompt_str + rejected_response)
-            tokenized_batch.append(batch_element)
-            
-        collated_batch = self.collate(tokenized_batch)
-        
-        return collated_batch
+        return self.process_and_pad(triplets)
+    
