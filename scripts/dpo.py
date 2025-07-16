@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from alignment.train.callbacks import JsonLoggingCallback
 from alignment.train.trainers import DPOTrainer
-from alignment.data.data_collator import DPODataCollatorWithPadding
+from alignment.data.data_collator import OfflineDPODataCollator
 from alignment.utils import seed_everything
 from hydra.utils import get_original_cwd
 
@@ -31,33 +31,28 @@ def main(config: DictConfig):
     policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
     ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_load_path)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
 
     full_dataset = load_dataset(config.dataset.name_or_path, split=config.dataset.split)
+    
     subset_size = config.dataset.get("subset_size", None)
     if subset_size is not None:
         print(f"Using a subset of the data: {subset_size}")
-        
-        if isinstance(subset_size, float) and 0 < subset_size < 1.0:
+        if isinstance(subset_size, float) and 0 < subset_size <= 1.0:
             num_samples = int(len(full_dataset) * subset_size)
         elif isinstance(subset_size, int):
             num_samples = subset_size
         else:
             raise ValueError(f"Invalid subset_size: {subset_size}. Must be a float < 1.0 or an int.")
-
         full_dataset = full_dataset.shuffle(seed=config.seed).select(range(num_samples))
 
     dataset_splited = full_dataset.train_test_split(test_size=0.1, seed=config.seed)
     train_dataset = dataset_splited["train"]
     eval_dataset = dataset_splited["test"]
     
-    data_collator = DPODataCollatorWithPadding(
+    data_collator = OfflineDPODataCollator(
         tokenizer=tokenizer,
         max_length=config.dataset.max_length,
-        max_prompt_length=config.dataset.max_length // 2
+        max_prompt_length=config.dataset.max_length // 2,
     )
 
     train_dataloader = DataLoader(
@@ -67,7 +62,6 @@ def main(config: DictConfig):
         collate_fn=data_collator, 
         num_workers=config.dataset.num_workers
     )
-    
     eval_dataloader = DataLoader(
         eval_dataset, 
         batch_size=config.dataset.batch_size, 
@@ -76,8 +70,8 @@ def main(config: DictConfig):
         num_workers=config.dataset.num_workers
     )
     
-    log_dir = config.run_dir
-    callbacks = [JsonLoggingCallback(log_dir=log_dir)]
+    optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
+    callbacks = [JsonLoggingCallback(log_dir=config.run_dir)]
     
     trainer = DPOTrainer(
         policy=policy,
@@ -96,4 +90,3 @@ def main(config: DictConfig):
     
 if __name__ == "__main__":
     main()
-    

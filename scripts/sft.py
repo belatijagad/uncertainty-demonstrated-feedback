@@ -11,21 +11,31 @@ from alignment.train.trainers import SFTTrainer
 from alignment.data.data_collator import SFTDataCollator
 from alignment.data.utils import format_sft_prompt
 
+def setup_model_and_tokenizer(config: DictConfig) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
+    """Loads and configures the model and tokenizer."""
+    print("--- Setting up model and tokenizer ---")
+    
+    model = AutoModelForCausalLM.from_pretrained(config.model.name_or_path, torch_dtype=torch.bfloat16)
+    tokenizer = AutoTokenizer.from_pretrained(config.model.name_or_path)
+
+    CHATML_TEMPLATE = """{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"""
+
+    tokenizer.add_special_tokens({
+        "pad_token": "<|pad|>",
+        "additional_special_tokens": ["<|im_start|>", "<|im_end|>"],
+    })
+    
+    tokenizer.chat_template = CHATML_TEMPLATE
+    model.resize_token_embeddings(len(tokenizer))
+        
+    return model, tokenizer
+
 @hydra.main(version_base=None, config_path="../configs", config_name="pythia160m_sft")
 def main(config: DictConfig):
     print("--- Starting Supervised Fine-Tuning (SFT) ---")
 
-    model = AutoModelForCausalLM.from_pretrained(config.model.name_or_path, torch_dtype=torch.bfloat16)
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name_or_path)
-    tokenizer.add_special_tokens({
-        "pad_token": "<|pad|>",
-        "additional_special_tokens": ["<|prompter|>", "<|assistant|>"],
-    })
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        
-    model.resize_token_embeddings(len(tokenizer))
-
+    model, tokenizer = setup_model_and_tokenizer(config)
+    
     full_dataset = load_dataset(config.dataset.name_or_path, split=config.dataset.split)
     processed_dataset = full_dataset.map(format_sft_prompt)
     
