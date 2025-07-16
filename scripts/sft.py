@@ -36,7 +36,6 @@ def main(config: DictConfig):
     model, tokenizer = setup_model_and_tokenizer(config)
     
     full_dataset = load_dataset(config.dataset.name_or_path, split=config.dataset.split)
-    processed_dataset = full_dataset.map(format_sft_prompt)
     
     subset_size = config.dataset.get("subset_size", None)
     if subset_size is not None:
@@ -49,9 +48,9 @@ def main(config: DictConfig):
         else:
             raise ValueError(f"Invalid subset_size: {subset_size}. Must be a float <= 1.0 or an int.")
 
-        processed_dataset = processed_dataset.shuffle(seed=config.seed).select(range(num_samples))
+        full_dataset = full_dataset.shuffle(seed=config.seed).select(range(num_samples))
 
-    dataset_splited = processed_dataset.train_test_split(test_size=0.05, seed=config.seed)
+    dataset_splited = full_dataset.train_test_split(test_size=0.05, seed=config.seed)
     
     data_collator = SFTDataCollator(tokenizer, max_length=config.dataset.max_length)
 
