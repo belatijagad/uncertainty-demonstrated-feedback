@@ -9,7 +9,6 @@ from datasets import load_dataset
 from alignment.train.callbacks import JsonLoggingCallback
 from alignment.train.trainers import SFTTrainer
 from alignment.data.data_collator import SFTDataCollator
-from alignment.data.utils import format_sft_prompt
 
 def setup_model_and_tokenizer(config: DictConfig) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     """Loads and configures the model and tokenizer."""
