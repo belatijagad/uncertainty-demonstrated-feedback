@@ -6,9 +6,8 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from datasets import load_dataset
 
-from alignment.train.callbacks import JsonLoggingCallback
 from alignment.train.trainers import SFTTrainer
-from alignment.data.data_collator import SFTDataCollator
+from alignment.collators.sft import SFTDataCollator
 
 def setup_model_and_tokenizer(config: DictConfig) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     """Loads and configures the model and tokenizer."""
@@ -71,7 +70,7 @@ def main(config: DictConfig):
     optimizer = AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
 
     log_dir = config.run_dir
-    callbacks = [JsonLoggingCallback(log_dir=log_dir)]
+    callbacks = []
     
     trainer = SFTTrainer(
         model=model,

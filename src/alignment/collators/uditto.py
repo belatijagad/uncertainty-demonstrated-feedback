@@ -1,6 +1,6 @@
 import torch
 from dataclasses import dataclass
-from alignment.collators.ditto import DITTODataCollator
+from alignment.collators import DITTODataCollator
 
 @dataclass
 class UDITTODataCollator(DITTODataCollator):

@@ -7,7 +7,7 @@ from tqdm import tqdm
 from typing import Optional, Literal
 from collections import defaultdict
 from omegaconf import DictConfig
-from alignment.callbacks.callbacks import TrainerCallback
+from alignment.callbacks import TrainerCallback
 
 from abc import ABC, abstractmethod
 

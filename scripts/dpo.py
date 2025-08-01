@@ -7,9 +7,8 @@ import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from alignment.train.callbacks import JsonLoggingCallback
 from alignment.train.trainers import DPOTrainer
-from alignment.data.data_collator import OfflineDPODataCollator
+from alignment.collators import OfflineDPODataCollator
 from alignment.utils import seed_everything
 from hydra.utils import get_original_cwd
 
@@ -71,7 +70,7 @@ def main(config: DictConfig):
     )
     
     optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
-    callbacks = [JsonLoggingCallback(log_dir=config.run_dir)]
+    callbacks = []
     
     trainer = DPOTrainer(
         policy=policy,

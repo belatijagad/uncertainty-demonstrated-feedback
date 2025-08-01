@@ -5,7 +5,7 @@ from transformers import PreTrainedTokenizer, PreTrainedModel
 
 from typing import Literal
 from omegaconf import DictConfig
-from alignment.callbacks.callbacks import TrainerCallback
+from alignment.callbacks.resample import TrainerCallback
 from alignment.trainers.base import BaseTrainer
 
 class SFTTrainer(BaseTrainer):
