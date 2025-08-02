@@ -1,6 +1,8 @@
 import torch
+from typing import Optional
 from dataclasses import dataclass
 from alignment.collators import DITTODataCollator
+from alignment.estimators import BaseEstimator
 
 @dataclass
 class UDITTODataCollator(DITTODataCollator):
@@ -11,6 +13,8 @@ class UDITTODataCollator(DITTODataCollator):
     to being based on an uncertainty score (average log probability).
     """
     higher_score_is_better: bool = False
+    estimator: Optional[BaseEstimator] = None
+    threshold: Optional[float] = None
 
     def _process_and_cache_generations(self, generated_ids: torch.Tensor, prompts: list[str], prompt_len: int, step: int):
         """
@@ -18,6 +22,14 @@ class UDITTODataCollator(DITTODataCollator):
 
         Instead of caching only text, this version calculates an uncertainty score
         (average log probability) for each generation and caches (text, score) tuples.
+
+        Cache Structure:
+            The `self.cache` attribute is a nested dictionary with the following
+            structure: `cache[step][prompt]`.
+            - `step` (int): The current iteration or generation step.
+            - `prompt` (str): The original input prompt text.
+            - The value is a list of `(response, score)` tuples, storing each
+            generated candidate and its associated uncertainty score.
         """
         labels = generated_ids.clone()
         labels[:, :prompt_len] = self.label_pad_token_id
@@ -25,8 +37,7 @@ class UDITTODataCollator(DITTODataCollator):
         outputs = self.model(input_ids=generated_ids, attention_mask=(generated_ids != self.tokenizer.pad_token_id))
         
         # Calculate scores using the log-probability of the generated tokens
-        # TODO: Modify the logic to utilize more uncertainty estimation technique.
-        scores = self._get_batch_logps(outputs.logits, labels, average_log_prob=True)
+        scores = self.estimator(outputs, generated_ids, self.nli_model)
         
         response_ids = generated_ids[:, prompt_len:]
         responses = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
@@ -35,9 +46,29 @@ class UDITTODataCollator(DITTODataCollator):
         for prompt in prompts:
             if prompt not in self.cache[step]: self.cache[step][prompt] = []
             for _ in range(self.bootstrap_count):
-                self.cache[step][prompt].append(
-                    (responses[response_idx] + self.tokenizer.eos_token, scores[response_idx].item())
-                )
+                score = scores[response_idx].item()
+
+                # Threshold based rejection sampling
+                if self.threshold:
+                    should_reject = (
+                        (self.higher_score_is_better and score < self.threshold)
+                        or (not self.higher_score_is_better and score > self.threshold)
+                    )
+
+                    if not should_reject:
+                        self.cache[step][prompt].append(
+                            (
+                                responses[response_idx] + self.tokenizer.eos_token, 
+                                score
+                            )
+                        )
+                else:
+                    self.cache[step][prompt].append(
+                        (
+                            responses[response_idx] + self.tokenizer.eos_token, 
+                            score
+                        )
+                    )
                 response_idx += 1
     
     def _get_noisy_pairs(self, prompt: str, step_a: int) -> list[tuple]:
