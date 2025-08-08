@@ -42,6 +42,8 @@ def main(config: DictConfig):
     logger.info("Reference policy loaded successfully.")
     
     tokenizer = AutoTokenizer.from_pretrained(model_load_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     logger.info("Tokenizer loaded successfully.")
 
     full_dataset = load_dataset(config.dataset.name_or_path, split=config.dataset.split)
