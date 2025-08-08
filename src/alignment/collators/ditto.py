@@ -64,6 +64,10 @@ class DITTODataCollator(BaseDPOCollator):
         self.last_sampled_step = step
         if step not in self.cache: self.cache[step] = {}
 
+        if len(self.train_dataset) == 0 or len(self.train_dataset["prompt"]) == 0:
+            print("Warning: Empty dataset provided for DITTO resampling.")
+            return
+
         self.model.eval()
         with torch.inference_mode():
             # 1. Get all unique prompts and sort them for a consistent order

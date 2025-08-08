@@ -54,7 +54,7 @@ class DPOTrainerTester(unittest.TestCase):
             train_dataloader=dataloader,
             eval_dataloader=dataloader,
             optimizer=optimizer,
-            wandb_run=None  # Match actual signature
+            wandb_run=None
         )
         
         initial_param = next(self.policy.parameters()).clone()
