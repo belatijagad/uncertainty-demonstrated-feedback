@@ -28,7 +28,7 @@ class DITTODataCollator(BaseDPOCollator):
     Implements the DITTO online data sampling strategy by inheriting tokenization
     and padding mechanics from the BaseDPOCollator.
     """
-    train_dataset: Dataset
+    train_dataset: Dataset = field(default=None)
     batch_size: int = 8
     
     # DITTO-specific parameters

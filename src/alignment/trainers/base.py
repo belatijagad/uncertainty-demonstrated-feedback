@@ -14,6 +14,7 @@
 
 import os
 import wandb
+from wandb.sdk.wandb_run import Run
 import logging
 from tqdm import tqdm
 from omegaconf import DictConfig
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 class BaseTrainer(ABC):
     def __init__(self, model: PreTrainedModel, config: DictConfig,
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, eval_dataloader: DataLoader,
-                 optimizer: Optimizer, callbacks: Optional[list[TrainerCallback]] = None, wandb_run: Optional[wandb.Run] = None):
+                 optimizer: Optimizer, callbacks: Optional[list[TrainerCallback]] = None, wandb_run: Optional[Run] = None):
         self.model = model
         self.config = config
         self.tokenizer = tokenizer
@@ -212,7 +213,7 @@ class BaseTrainer(ABC):
         pass
 
     @abstractmethod
-    def _generate_samples() -> tuple[list[str], list[str]]:
+    def _generate_samples(self) -> tuple[list[str], list[str]]:
         pass
         
     @staticmethod

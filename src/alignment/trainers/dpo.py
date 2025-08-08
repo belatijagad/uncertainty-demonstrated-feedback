@@ -15,6 +15,7 @@
 
 import tqdm
 import wandb
+from wandb.sdk.wandb_run import Run
 from typing import Optional, Literal
 from omegaconf import DictConfig
 
@@ -33,7 +34,7 @@ class DPOTrainer(BaseTrainer):
     def __init__(self, policy: PreTrainedModel, ref_policy: PreTrainedModel, config: DictConfig, 
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, eval_dataloader: DataLoader, 
                  optimizer: Optimizer, callbacks: Optional[list[TrainerCallback]] = None,
-                 wandb_run: Optional[wandb.Run] = None):
+                 wandb_run: Optional[Run] = None):
         super().__init__(policy, config, tokenizer, train_dataloader, eval_dataloader, optimizer, callbacks, wandb_run)
         
         self.ref_policy = ref_policy
