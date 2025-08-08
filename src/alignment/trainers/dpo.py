@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import tqdm
-import wandb
 from wandb.sdk.wandb_run import Run
 from typing import Optional, Literal
 from omegaconf import DictConfig
