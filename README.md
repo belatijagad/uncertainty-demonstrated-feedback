@@ -21,8 +21,9 @@ uv pip install -e .
 Create `.env` to store token credentials for `huggingface_hub` and `wandb`
 
 ```bash
-HUGGINGFACE_TOKEN=
-WANDB_TOKEN=
+HUGGINGFACE_API_KEY=
+WANDB_API_KEY=
+GEMINI_API_KEY=
 ```
 
 ## Experiments

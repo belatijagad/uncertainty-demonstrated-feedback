@@ -1,11 +1,16 @@
-run_dir: "experiments/pythia-160m-dpo"
 commit_message: "Test"
 seed: 42
-push_to_hub: False
 
 model:
-  name_or_path: "experiments/pythia-160m-sft/model" 
-  beta: 0.1
+  name_or_path: "experiments/pythia-160m-sft/model"
+
+wandb:
+  enabled: true
+  project: "uncertainty-aware-alignment"
+  name: "pythia160m_dpo"
+  group: ["dpo"]
+  tags: ["pythia", "160m"]
+  notes: "DPO training on Pythia 160M"
 
 dataset:
   name_or_path: "HuggingFaceH4/ultrafeedback_binarized"
@@ -21,10 +26,13 @@ optimizer:
   weight_decay: 0.01
 
 trainer:
+  sample_during_eval: true
   epochs: 1
+  beta: 0.1
   warmup_steps: 100
   max_grad_norm: 1.0
   logging_steps: 10
   save_steps: 500
   eval_steps: 250
+  push_to_hub: false
   repo_id: "belati/pythia160m_dpo"

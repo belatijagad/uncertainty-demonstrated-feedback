@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import wandb
 import logging
 from tqdm import tqdm
-from typing import Optional, Literal
-from collections import defaultdict
 from omegaconf import DictConfig
+from collections import defaultdict
 from abc import ABC, abstractmethod
+from typing import Optional, Literal
 
 import torch
 from torch.optim import Optimizer
@@ -32,7 +34,7 @@ logger = logging.getLogger(__name__)
 class BaseTrainer(ABC):
     def __init__(self, model: PreTrainedModel, config: DictConfig,
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, eval_dataloader: DataLoader,
-                 optimizer: Optimizer, callbacks: Optional[list[TrainerCallback]] = None):
+                 optimizer: Optimizer, callbacks: Optional[list[TrainerCallback]] = None, wandb_run: Optional[wandb.Run] = None):
         self.model = model
         self.config = config
         self.tokenizer = tokenizer
@@ -51,14 +53,9 @@ class BaseTrainer(ABC):
             num_training_steps=num_train_steps
         )
         self.step_counter = 0
-        
-    @abstractmethod
-    def _get_batch_metrics(self, batch: dict, train_eval: Literal["train", "eval"]) -> tuple[torch.Tensor, dict]:
-        """
-        Computes the loss and a dictionary of metrics for a given batch
-        """
-        pass
-    
+
+        self.wandb_run = wandb_run
+            
     def train(self) -> None:
         """Main training loop."""
         num_train_steps = self.config.epochs * len(self.train_dataloader)
@@ -101,6 +98,8 @@ class BaseTrainer(ABC):
             for cb in self.callbacks:
                 cb.on_step_end(step=self.step_counter, metrics=metrics, trainer=self)
 
+            if self.wandb_run: self.wandb_run.log(metrics, step=self.step_counter)
+
             if (i + 1) % self.config.logging_steps == 0:
                 metrics_str = " | ".join([f"{k}: {v:.4f}" if isinstance(v, (int, float)) else f"{k}: {v}" 
                                         for k, v in metrics.items()])
@@ -109,12 +108,49 @@ class BaseTrainer(ABC):
 
             if (i + 1) % self.config.eval_steps == 0:
                 eval_metrics = self.evaluate()
-                logger.info(f"Step {self.step_counter} Evaluation: {eval_metrics}")
+                eval_metrics_str = " | ".join([f"{k}: {v:.4f}" if isinstance(v, (int, float)) else f"{k}: {v}" 
+                                            for k, v in eval_metrics.items()])
+                logger.info(f"Step {self.step_counter} Evaluation | {eval_metrics_str}")
+
+                # TODO: This code is DPO-specific, won't work for SFT and stuffs.
+                #       Need to move this part to DPO code somehow without rewriting the whole training loop.
+                policy_samples, ref_samples = None, None
+                if self.config.sample_during_eval:
+                    policy_samples, ref_samples = self._generate_samples()
+
+                # TODO: Check whether this wandb logging gives the proper format
+                if self.wandb_run:
+                    wandb_log_data = {**eval_metrics}
+                    if policy_samples is not None and ref_samples is not None:
+                        policy_table = wandb.Table(columns=["step", "prompt", "sample"])
+                        ref_table = wandb.Table(columns=["step", "prompt", "sample"])
+                        
+                        sample_prompts = []
+                        for batch in self.eval_dataloader:
+                            if "prompt_input_ids" in batch:
+                                prompts = self.tokenizer.batch_decode(batch["prompt_input_ids"], skip_special_tokens=True)
+                                sample_prompts.extend(prompts)
+                            if len(sample_prompts) >= len(policy_samples):
+                                break
+                        
+                        for prompt, policy_sample, ref_sample in zip(sample_prompts, policy_samples, ref_samples):
+                            policy_table.add_data(self.step_counter, prompt, policy_sample)
+                            ref_table.add_data(self.step_counter, prompt, ref_sample)
+                            
+                        wandb_log_data["policy_samples"] = policy_table
+                        wandb_log_data["reference_samples"] = ref_table
+                        
+                self.wandb_run.log(wandb_log_data, step=self.step_counter)
 
             if (i + 1) % self.config.save_steps == 0:
                 save_path = f"checkpoint-{self.step_counter}"
                 self.save(output_dir=save_path)
-                logger.info(f"Saved checkpoint to {save_path}")
+                self.push_to_hub(
+                    folder_path=save_path,
+                    commit_message=f"Step {self.step_counter}",
+                    token=os.environ.get("HUGGINGFACE_API_KEY", None),
+                )
+                logger.info(f"Saved checkpoint to {save_path}.")
         
         for cb in self.callbacks: cb.on_train_end(trainer=self)
         pbar.close()
@@ -160,14 +196,24 @@ class BaseTrainer(ABC):
         folder_path: str,
         commit_message: Optional[str] = "End of training",
         token: Optional[str] = None,
+        revision: Optional[str] = None,
     ) -> str:
-        logger.info("Uploading model to huggingface hub repository {}...")
+        logger.info(f"Uploading model to huggingface hub repository {self.config.repo_id}...")
         return upload_folder(
             repo_id=self.config.repo_id,
             folder_path=folder_path,
             commit_message=commit_message,
-            token=token
+            token=token,
+            revision=revision,
         )
+    
+    @abstractmethod
+    def _get_batch_metrics(self, batch: dict[str, torch.Tensor], train_eval: Literal["train", "eval"]) -> tuple[torch.Tensor, dict[str, float]]:
+        pass
+
+    @abstractmethod
+    def _generate_samples() -> tuple[list[str], list[str]]:
+        pass
         
     @staticmethod
     def _get_batch_logps(logits: torch.FloatTensor, labels: torch.LongTensor, label_pad_token_id: int = -100) -> torch.FloatTensor:

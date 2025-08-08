@@ -1,9 +1,12 @@
 import os
 import logging
 from pathlib import Path
-from omegaconf import DictConfig, OmegaConf
+from dotenv import load_dotenv
+
+import wandb
 import hydra
 from hydra.utils import get_original_cwd
+from omegaconf import DictConfig, OmegaConf
 
 import torch
 from torch.optim import AdamW
@@ -19,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 @hydra.main(version_base=None, config_path="../configs", config_name="pythia160m_dpo")
 def main(config: DictConfig):
+    load_dotenv()
     OmegaConf.resolve(config)
     seed_everything(config.seed)
     
@@ -88,6 +92,17 @@ def main(config: DictConfig):
     optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
     callbacks = []
     
+    run = None
+    if config.wandb.enabled:
+        run = wandb.init(
+            project=config.wandb.project,
+            config=config,
+            name=config.wandb.name,
+            group=config.wandb.group,
+            tags=config.wandb.tags,
+            notes=config.wandb.notes,
+        )
+
     trainer = DPOTrainer(
         policy=policy,
         ref_policy=ref_policy,
@@ -96,7 +111,8 @@ def main(config: DictConfig):
         train_dataloader=train_dataloader,
         eval_dataloader=eval_dataloader,
         optimizer=optimizer,
-        callbacks=callbacks
+        callbacks=callbacks,
+        wandb_run=run,
     )
     
     trainer.train()
@@ -109,11 +125,8 @@ def main(config: DictConfig):
     folder_path.mkdir(parents=True, exist_ok=True)
     trainer.save(output_dir=folder_path)
 
-    huggingface_token = os.environ.get("HUGGINGFACE_TOKEN", None)
-    if config.push_to_hub and huggingface_token:
-        if not huggingface_token:
-            logger.warning("Hugging Face token not found. Skipping push to hub.")
-            return
+    huggingface_token = os.environ.get("HUGGINGFACE_API_KEY", None)
+    if config.trainer.push_to_hub and huggingface_token:
         logger.info("Pushing model to hub.")
         trainer.push_to_hub(folder_path=folder_path, commit_message=config.commit_message, token=huggingface_token)
         logger.info("Successfully pushed the model.")

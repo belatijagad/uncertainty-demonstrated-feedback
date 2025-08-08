@@ -13,24 +13,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import tqdm
+import wandb
+from typing import Optional, Literal
+from omegaconf import DictConfig
+
 import torch
 import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizer, PreTrainedModel
 
-from typing import Optional, Literal
-from omegaconf import DictConfig
 from alignment.callbacks import TrainerCallback
-
 from alignment.trainers.base import BaseTrainer
+from alignment.utils import pad_to_length
 
 class DPOTrainer(BaseTrainer):
     """A trainer for Direct Preference Optimization."""
     def __init__(self, policy: PreTrainedModel, ref_policy: PreTrainedModel, config: DictConfig, 
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, eval_dataloader: DataLoader, 
-                 optimizer: Optimizer, callbacks: Optional[list[TrainerCallback]] = None):
-        super().__init__(policy, config, tokenizer, train_dataloader, eval_dataloader, optimizer, callbacks)
+                 optimizer: Optimizer, callbacks: Optional[list[TrainerCallback]] = None,
+                 wandb_run: Optional[wandb.Run] = None):
+        super().__init__(policy, config, tokenizer, train_dataloader, eval_dataloader, optimizer, callbacks, wandb_run)
         
         self.ref_policy = ref_policy
         self.ref_policy.to(self.device)
@@ -61,6 +65,42 @@ class DPOTrainer(BaseTrainer):
             metrics["lr"] = self.scheduler.get_last_lr()[0]
             
         return loss, metrics
+        
+    def _generate_samples(self) -> list[str, str, str]:
+        """Generate samples from policy and reference models for wandb logging."""
+        self.model.eval()
+        
+        all_policy_samples, all_reference_samples = [], []
+
+        with torch.inference_mode():
+            eval_pbar = tqdm(self.eval_dataloader, desc="Generating samples", 
+                           bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}")
+            for batch in eval_pbar:
+                batch = {k: v.to(self.device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+                
+                policy_output = self.model.generate(
+                    batch['prompt_input_ids'], 
+                    attention_mask=batch['prompt_attention_mask'], 
+                    max_length=self.config.max_length, 
+                    do_sample=True, 
+                    pad_token_id=self.tokenizer.pad_token_id
+                )
+                policy_output_decoded = self.tokenizer.batch_decode(policy_output, skip_special_tokens=True)
+                all_policy_samples.extend(policy_output_decoded)
+
+                reference_output = self.ref_policy.generate(
+                    batch['prompt_input_ids'], 
+                    attention_mask=batch['prompt_attention_mask'], 
+                    max_length=self.config.max_length, 
+                    do_sample=True, 
+                    pad_token_id=self.tokenizer.pad_token_id
+                )
+                reference_output_decoded = self.tokenizer.batch_decode(reference_output, skip_special_tokens=True)
+                all_reference_samples.extend(reference_output_decoded)
+                        
+        self.model.train()
+                
+        return all_policy_samples, all_reference_samples
 
     def _concatenated_forward(self, model: PreTrainedModel, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Performs a forward pass on a concatenated batch of chosen and rejected examples."""
@@ -84,22 +124,18 @@ class DPOTrainer(BaseTrainer):
     def _concatenated_input(self, batch: dict) -> dict:
         """Pads and concatenates the chosen and rejected examples in a batch."""
         max_length = max(batch["chosen_input_ids"].shape[1], batch["rejected_input_ids"].shape[1])
-        
-        def pad(tensor, value):
-            return F.pad(tensor, (0, max_length - tensor.shape[1]), mode='constant', value=value)
-
         return {
             "concatenated_input_ids": torch.cat([
-                pad(batch["chosen_input_ids"], self.tokenizer.pad_token_id),
-                pad(batch["rejected_input_ids"], self.tokenizer.pad_token_id),
+                pad_to_length(batch["chosen_input_ids"], max_length, self.tokenizer.pad_token_id, 1),
+                pad_to_length(batch["rejected_input_ids"], max_length, self.tokenizer.pad_token_id, 1),
             ], dim=0),
             "concatenated_attention_mask": torch.cat([
-                pad(batch["chosen_attention_mask"], 0),
-                pad(batch["rejected_attention_mask"], 0),
+                pad_to_length(batch["chosen_attention_mask"], max_length, 0, 1),
+                pad_to_length(batch["rejected_attention_mask"], max_length, 0, 1),
             ], dim=0),
             "concatenated_labels": torch.cat([
-                pad(batch["chosen_labels"], -100),
-                pad(batch["rejected_labels"], -100),
+                pad_to_length(batch["chosen_labels"], max_length, -100, 1),
+                pad_to_length(batch["rejected_labels"], max_length, -100, 1),
             ], dim=0),
         }
     
@@ -109,7 +145,7 @@ class DPOTrainer(BaseTrainer):
         pi_logratios = policy_chosen_logps - policy_rejected_logps
         ref_logratios = ref_chosen_logps - ref_rejected_logps
         
-        beta = self.config.model.beta
+        beta = self.config.beta
         logits = pi_logratios - ref_logratios
         losses = -F.logsigmoid(beta * logits)
         
