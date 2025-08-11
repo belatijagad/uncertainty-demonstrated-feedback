@@ -13,15 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from alignment.callbacks.base import TrainerCallback
+from transformers import PreTrainedModel
+
+from alignment.callbacks import TrainerCallback
+from alignment.collators import DITTODataCollator
 
 class ResampleCallback(TrainerCallback):
-    def __init__(self, collator, model, mode, resample_rate, reset_rate):
+    def __init__(self, collator: DITTODataCollator, model: PreTrainedModel, resample_rate: int):
         self.collator = collator
         self.model = model
-        self.mode = mode
         self.resample_rate = resample_rate
-        self.reset_rate = reset_rate
 
         self.last_step_num = None
         

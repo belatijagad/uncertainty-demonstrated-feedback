@@ -13,14 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-from torch.utils.data import Dataset, TensorDataset, DataLoader
+import random
+import logging
+from tqdm import tqdm
 from typing import Any
 from dataclasses import dataclass, field
-from tqdm import tqdm
-import random
+
+import torch
+from torch.utils.data import Dataset, TensorDataset, DataLoader
+from transformers import PreTrainedModel
 
 from alignment.collators import BaseDPOCollator
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class DITTODataCollator(BaseDPOCollator):
@@ -29,20 +34,32 @@ class DITTODataCollator(BaseDPOCollator):
     and padding mechanics from the BaseDPOCollator.
     """
     train_dataset: Dataset = field(default=None)
-    batch_size: int = 8
+    batch_size: int = 24
+    model: PreTrainedModel = None
     
     # DITTO-specific parameters
     frac_expert: float = 0.7
     frac_replay: float = 0.2
     frac_noisy: float = 0.1
-    rescale_batch: int = 3
+    rescale_batch: int = 1
     bootstrap_count: int = 10
     
     cache: dict[int, dict[str, list[str]]] = field(default_factory=dict, init=False, repr=False)
     last_sampled_step: int = field(default=0, init=False)
 
     def _process_and_cache_generations(self, generated_ids, prompts, prompt_len, step):
-        """Decodes and caches generated text."""
+        """
+        Decodes and caches generated text.
+        
+        Cache Structure:
+            The `self.cache` attribute is a nested dictionary with the following
+            structure: `cache[step][prompt]`.
+            - `step` (int): The current iteration or generation step.
+            - `prompt` (str): The original input prompt text.
+            - The value is a list of `response` tuples, storing each
+              generated candidate.
+        """
+
         # Decode only the newly generated part of the sequences
         response_ids = generated_ids[:, prompt_len:]
         responses = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
@@ -60,12 +77,17 @@ class DITTODataCollator(BaseDPOCollator):
         Generates new responses using direct PyTorch model.generate calls
         and caches them for DITTO's dynamic batching.
         """
-        print(f"--- DITTO: Resampling data at step {step} ---")
+
+        if self.model is None:
+            logger.error("DITTOCollator's model is None.")
+            raise ValueError("Model is not defined.")
+
+        logger.info(f"Resampling data at step {step}")
         self.last_sampled_step = step
         if step not in self.cache: self.cache[step] = {}
 
         if len(self.train_dataset) == 0 or len(self.train_dataset["prompt"]) == 0:
-            print("Warning: Empty dataset provided for DITTO resampling.")
+            logger.warning("Empty dataset provided for DITTO resampling")
             return
 
         self.model.eval()
@@ -160,7 +182,8 @@ class DITTODataCollator(BaseDPOCollator):
         final_triplets = self._get_ditto_sampled_triplets(features)
         
         if not final_triplets:
-            print("Warning: DITTO sampling returned no triplets for this batch. Returning empty dict.")
+            logger.warning("DITTO sampling returned no triplets for this batch. Returning empty dict.")
+            
             return {}
 
         return self.process_and_pad(final_triplets)

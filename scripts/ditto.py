@@ -1,0 +1,168 @@
+import os
+import random
+import logging
+from pathlib import Path
+from dotenv import load_dotenv
+from collections import defaultdict
+
+import wandb
+import hydra
+from typing import Any
+from hydra.utils import get_original_cwd
+from omegaconf import DictConfig, OmegaConf
+
+import torch
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+from datasets import DatasetDict, Dataset, load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from alignment.trainers import DPOTrainer
+from alignment.callbacks import ResampleCallback
+from alignment.collators import DITTODataCollator
+from alignment.utils import seed_everything
+
+logger = logging.getLogger(__name__)
+
+def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Dataset, Dataset]:
+    train_split = dataset['train'] if 'train' in dataset else dataset['val']
+    eval_split = dataset['val'] if 'val' in dataset else dataset['test']
+        
+    num_authors = config.get('num_authors', 5)
+    train_samples_per_author = config.get('train_samples_per_author', 100)
+    eval_samples_per_author = config.get('eval_samples_per_author', 20)
+    
+    logger.info(f"Processing dataset: selecting {num_authors} authors with "
+                f"{train_samples_per_author} train and {eval_samples_per_author} eval samples each")
+    
+    train_author_data = defaultdict(list)
+    for example in train_split:
+        author = example['author']
+        train_author_data[author].append(example)
+    
+    eval_author_data = defaultdict(list)
+    for example in eval_split:
+        author = example['author']
+        eval_author_data[author].append(example)
+    
+    train_authors = set(train_author_data.keys())
+    eval_authors = set(eval_author_data.keys())
+    common_authors = list(train_authors.intersection(eval_authors))
+    
+    random.shuffle(common_authors)
+    selected_authors = common_authors[:num_authors]
+    
+    logger.info(f"Selected authors: {selected_authors}")
+    
+    train_data, eval_data = [], []
+    
+    for author in selected_authors:
+        author_train_samples = train_author_data[author]
+        random.shuffle(author_train_samples)
+        train_data.extend(author_train_samples[:train_samples_per_author])
+        
+        author_eval_samples = eval_author_data[author]
+        random.shuffle(author_eval_samples)
+        eval_data.extend(author_eval_samples[:eval_samples_per_author])
+    
+    random.shuffle(train_data)
+    random.shuffle(eval_data)
+    
+    train_dataset = Dataset.from_list(train_data)
+    eval_dataset = Dataset.from_list(eval_data)
+    
+    logger.info(f"Final dataset sizes: train={len(train_dataset)}, eval={len(eval_dataset)}")
+            
+    return train_dataset, eval_dataset
+
+@hydra.main(version_base=None, config_path="../configs/ditto", config_name="default")
+def main(config: DictConfig):
+    load_dotenv()
+    OmegaConf.resolve(config)
+    seed_everything(config.seed)
+    
+    model_path = config.model.name_or_path
+    potential_local_path = os.path.join(get_original_cwd(), model_path)
+    
+    if os.path.isdir(potential_local_path):
+        logger.info(f"Loading model from local directory: {potential_local_path}")
+        model_load_path = potential_local_path
+    else:
+        logger.info(f"Loading model from Hugging Face Hub: {model_path}")
+        model_load_path = model_path
+    
+    policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
+    logger.info("Policy loaded successfully.")
+    ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
+    logger.info("Reference policy loaded successfully.")
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_load_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    logger.info("Tokenizer loaded successfully.")
+
+    full_dataset = load_dataset(config.dataset.name_or_path)
+    logger.info("Dataset loaded successfully.")
+
+    train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset)
+        
+    data_collator = DITTODataCollator(
+        tokenizer=tokenizer,
+        train_dataset=train_dataset,
+        max_length=config.dataset.max_length,
+        max_prompt_length=config.dataset.max_length // 2,
+        model=policy,
+        **config.resample
+    )
+
+    train_dataloader = DataLoader(
+        train_dataset, 
+        batch_size=config.dataset.batch_size, 
+        shuffle=True, 
+        collate_fn=data_collator, 
+        num_workers=config.dataset.num_workers
+    )
+    
+    optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
+    callbacks = [ResampleCallback(collator=data_collator, model=policy)]
+    
+    run = None
+    if config.wandb.enabled:
+        run = wandb.init(
+            project=config.wandb.project,
+            config=config,
+            name=config.wandb.name,
+            group=config.wandb.group,
+            tags=config.wandb.tags,
+            notes=config.wandb.notes,
+        )
+
+    trainer = DPOTrainer(
+        policy=policy,
+        ref_policy=ref_policy,
+        config=config.trainer,
+        tokenizer=tokenizer,
+        train_dataloader=train_dataloader,
+        optimizer=optimizer,
+        callbacks=callbacks,
+        wandb_run=run,
+    )
+    
+    trainer.train()
+
+    logger.info(f"Start evaluating model {policy.config.name_or_path}.")
+    trainer.evaluate()
+    logger.info("Evaluation complete.")
+
+    folder_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "model"
+    folder_path.mkdir(parents=True, exist_ok=True)
+    trainer.save(output_dir=folder_path)
+
+    huggingface_token = os.environ.get("HUGGINGFACE_API_KEY", None)
+    if config.trainer.push_to_hub and huggingface_token:
+        logger.info("Pushing model to hub.")
+        trainer.push_to_hub(folder_path=folder_path, commit_message=config.commit_message, token=huggingface_token)
+        logger.info("Successfully pushed the model.")
+    
+if __name__ == "__main__":
+    main()
