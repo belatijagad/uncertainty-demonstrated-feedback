@@ -20,7 +20,7 @@ from alignment.utils import seed_everything
 
 logger = logging.getLogger(__name__)
 
-@hydra.main(version_base=None, config_path="../configs", config_name="pythia160m_dpo")
+@hydra.main(version_base=None, config_path="../configs/dpo", config_name="default")
 def main(config: DictConfig):
     load_dotenv()
     OmegaConf.resolve(config)

@@ -1,0 +1,48 @@
+commit_message: "Test"
+seed: 42
+
+model:
+  name_or_path: "experiments/pythia-160m-sft/model"
+
+wandb:
+  enabled: true
+  project: "uncertainty-aware-alignment"
+  name: "pythia160m_ditto"
+  group: ["ditto"]
+  tags: ["pythia", "160m"]
+  notes: "DITTO training on Pythia 160M"
+
+dataset:
+  name_or_path: "belati/ccat50"
+  batch_size: 24
+  max_length: 1024
+  num_workers: 1
+
+  num_authors: 16
+  train_samples_per_author: 8
+  eval_samples_per_author: 4
+
+optimizer:
+  lr: 5.0e-6
+  weight_decay: 0.01
+
+trainer:
+  sample_during_eval: true
+  epochs: 1
+  beta: 0.1
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 250
+  push_to_hub: false
+  repo_id: "belati/pythia160m_ditto"
+  gradient_accumulation_steps: 1
+  max_length: 512
+
+resample:
+  frac_expert: 0.7
+  frac_replay: 0.2
+  frac_noisy: 0.1
+  rescale_batch: 3
+  bootstrap_count: 10
