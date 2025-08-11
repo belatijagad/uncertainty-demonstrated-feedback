@@ -1,4 +1,4 @@
-# Uncertainty Estimation for Demonstration Iterated Task Optimization
+# Uncertainty Aware Alignment
 
 ---
 
