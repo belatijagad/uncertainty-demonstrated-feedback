@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 
 class BaseTrainer(ABC):
     def __init__(self, model: PreTrainedModel, config: DictConfig,
-                 tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, eval_dataloader: DataLoader,
-                 optimizer: Optimizer, callbacks: Optional[list[TrainerCallback]] = None, wandb_run: Optional[Run] = None):
+                 tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer,
+                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None, 
+                 wandb_run: Optional[Run] = None):
         self.model = model
         self.config = config
         self.tokenizer = tokenizer
@@ -53,7 +54,7 @@ class BaseTrainer(ABC):
             num_warmup_steps=self.config.warmup_steps,
             num_training_steps=num_train_steps
         )
-        self.step_counter = 0
+        self.global_step = 0
 
         self.wandb_run = wandb_run
             
@@ -68,7 +69,7 @@ class BaseTrainer(ABC):
         
         logger.info(f"=>> Running Training {self.model.config.name_or_path} for {self.config.epochs} epochs.")
 
-        for cb in self.callbacks: cb.on_train_begin(trainer=self)
+        for cb in self.callbacks: cb.on_train_begin(args=None, state=self, control=None)
         self.optimizer.zero_grad()
 
         for i in range(num_train_steps):
@@ -89,7 +90,7 @@ class BaseTrainer(ABC):
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
-                self.step_counter += 1
+                self.global_step += 1
 
                 pbar.update(grad_acc_steps)
                 tqdm_metrics = {k: f"{v:.4f}" if isinstance(v, (int, float)) else str(v) 
@@ -97,21 +98,21 @@ class BaseTrainer(ABC):
                 pbar.set_postfix(tqdm_metrics)
                 
             for cb in self.callbacks:
-                cb.on_step_end(step=self.step_counter, metrics=metrics, trainer=self)
+                cb.on_step_end(args=None, state=self, control=None)
 
-            if self.wandb_run: self.wandb_run.log(metrics, step=self.step_counter)
+            if self.wandb_run: self.wandb_run.log(metrics, step=self.global_step)
 
             if (i + 1) % self.config.logging_steps == 0:
                 metrics_str = " | ".join([f"{k}: {v:.4f}" if isinstance(v, (int, float)) else f"{k}: {v}" 
                                         for k, v in metrics.items()])
-                report = f"Step {self.step_counter:>6} | {metrics_str}"
+                report = f"Step {self.global_step:>6} | {metrics_str}"
                 logger.info(report)
 
-            if (i + 1) % self.config.eval_steps == 0:
+            if (i + 1) % self.config.eval_steps == 0 and self.eval_dataloader is not None:
                 eval_metrics = self.evaluate()
                 eval_metrics_str = " | ".join([f"{k}: {v:.4f}" if isinstance(v, (int, float)) else f"{k}: {v}" 
                                             for k, v in eval_metrics.items()])
-                logger.info(f"Step {self.step_counter} Evaluation | {eval_metrics_str}")
+                logger.info(f"Step {self.global_step} Evaluation | {eval_metrics_str}")
 
                 # TODO: This code is DPO-specific, won't work for SFT and stuffs.
                 #       Need to move this part to DPO code somehow without rewriting the whole training loop.
@@ -135,25 +136,25 @@ class BaseTrainer(ABC):
                                 break
                         
                         for prompt, policy_sample, ref_sample in zip(sample_prompts, policy_samples, ref_samples):
-                            policy_table.add_data(self.step_counter, prompt, policy_sample)
-                            ref_table.add_data(self.step_counter, prompt, ref_sample)
+                            policy_table.add_data(self.global_step, prompt, policy_sample)
+                            ref_table.add_data(self.global_step, prompt, ref_sample)
                             
                         wandb_log_data["policy_samples"] = policy_table
                         wandb_log_data["reference_samples"] = ref_table
                         
-                self.wandb_run.log(wandb_log_data, step=self.step_counter)
+                self.wandb_run.log(wandb_log_data, step=self.global_step)
 
             if (i + 1) % self.config.save_steps == 0:
-                save_path = f"checkpoint-{self.step_counter}"
+                save_path = f"checkpoint-{self.global_step}"
                 self.save(output_dir=save_path)
                 self.push_to_hub(
                     folder_path=save_path,
-                    commit_message=f"Step {self.step_counter}",
+                    commit_message=f"Step {self.global_step}",
                     token=os.environ.get("HUGGINGFACE_API_KEY", None),
                 )
                 logger.info(f"Saved checkpoint to {save_path}.")
         
-        for cb in self.callbacks: cb.on_train_end(trainer=self)
+        for cb in self.callbacks: cb.on_train_end(args=None, state=self, control=None)
         pbar.close()
         logger.info("=>> Training complete.")
 
