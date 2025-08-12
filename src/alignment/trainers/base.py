@@ -27,6 +27,7 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizer, PreTrainedModel, get_linear_schedule_with_warmup
 from huggingface_hub import upload_folder
+from peft import PeftModel
 
 from alignment.callbacks import TrainerCallback
 
@@ -47,6 +48,8 @@ class BaseTrainer(ABC):
         
         self.device= "cuda" if torch.cuda.is_available() else "cpu"
         self.model.to(self.device)
+
+        self.is_peft_model = isinstance(self.model, PeftModel)
         
         num_train_steps = self.config.epochs * len(self.train_dataloader)
         self.scheduler = get_linear_schedule_with_warmup(
@@ -57,6 +60,14 @@ class BaseTrainer(ABC):
         self.global_step = 0
 
         self.wandb_run = wandb_run
+
+        if self.is_peft_model:
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in self.model.parameters())
+            logger.info(f"LoRA model detected: {trainable_params:,} trainable / {total_params:,} total parameters "
+                        f"({trainable_params/total_params:.2%})")
+        else:
+            logger.info("Standard (non-LoRA) model detected")
             
     def train(self) -> None:
         """Main training loop."""
@@ -184,9 +195,10 @@ class BaseTrainer(ABC):
         self.model.train()
         return final_metrics
 
-    def save(self, output_dir) -> None:
+    def save(self, output_dir: str) -> None:
         """Saves the model, optimizer, and scheduler states."""
         logger.info(f"Saving {self.model.config.name_or_path} to {output_dir}.")
+        os.makedirs(output_dir, exist_ok=True)
         self.model.save_pretrained(output_dir)
         self.tokenizer.save_pretrained(output_dir)
         torch.save(self.optimizer.state_dict(), f"{output_dir}/optimizer.pt")

@@ -1,5 +1,6 @@
 import os
 import logging
+from typing import Any
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -11,7 +12,8 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from datasets import load_dataset
+from datasets import Dataset, load_dataset
+from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from alignment.trainers import DPOTrainer
@@ -19,6 +21,27 @@ from alignment.collators import OfflineDPODataCollator
 from alignment.utils import seed_everything
 
 logger = logging.getLogger(__name__)
+
+def process_data(full_dataset: Dataset, config: dict[str, Any], seed: int) -> tuple[Dataset, Dataset]:
+    subset_size = config["subset_size"]
+
+    logger.info(f"Using a subset of the data: {subset_size}")
+    if isinstance(subset_size, float) and 0 < subset_size <= 1.0:
+        num_samples = int(len(full_dataset) * subset_size)
+        logger.info(f"Using {subset_size:.2%} of the data, resulting in {num_samples} samples.")
+    elif isinstance(subset_size, int):
+        num_samples = subset_size
+        logger.info(f"Using a subset of {num_samples} samples.")
+    else:
+        logger.error(f"Invalid subset_size: {subset_size}. Must be a float < 1.0 or an int.")
+        raise ValueError(f"Invalid subset_size: {subset_size}.")
+    
+    if num_samples > len(full_dataset):
+        raise ValueError(f"Number of samples {num_samples} exceeds dataset size {len(full_dataset)}.")
+    full_dataset = full_dataset.shuffle(seed=seed).select(range(num_samples))
+
+    dataset_splited = full_dataset.train_test_split(test_size=0.1, seed=seed)
+    return dataset_splited["train"], dataset_splited["test"]
 
 @hydra.main(version_base=None, config_path="../configs/dpo", config_name="default")
 def main(config: DictConfig):
@@ -38,6 +61,12 @@ def main(config: DictConfig):
     
     policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
     logger.info("Policy loaded successfully.")
+
+    if config.enable_lora:
+        lora_config = LoraConfig(**config.lora)
+        policy = get_peft_model(policy, lora_config, adapter_name="dpo")
+        policy.set_adapter("dpo")
+
     ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
     logger.info("Reference policy loaded successfully.")
     
@@ -48,28 +77,9 @@ def main(config: DictConfig):
 
     full_dataset = load_dataset(config.dataset.name_or_path, split=config.dataset.split)
     logger.info("Dataset loaded successfully.")
-    
-    subset_size = config.dataset.get("subset_size", None)
-    if subset_size is not None:
-        logger.info(f"Using a subset of the data: {subset_size}")
-        if isinstance(subset_size, float) and 0 < subset_size <= 1.0:
-            num_samples = int(len(full_dataset) * subset_size)
-            logger.info(f"Using {subset_size:.2%} of the data, resulting in {num_samples} samples.")
-        elif isinstance(subset_size, int):
-            num_samples = subset_size
-            logger.info(f"Using a subset of {num_samples} samples.")
-        else:
-            logger.error(f"Invalid subset_size: {subset_size}. Must be a float < 1.0 or an int.")
-            raise ValueError(f"Invalid subset_size: {subset_size}.")
-        
-        if num_samples > len(full_dataset):
-            raise ValueError(f"Number of samples {num_samples} exceeds dataset size {len(full_dataset)}.")
-        full_dataset = full_dataset.shuffle(seed=config.seed).select(range(num_samples))
 
-    dataset_splited = full_dataset.train_test_split(test_size=0.1, seed=config.seed)
-    train_dataset = dataset_splited["train"]
-    eval_dataset = dataset_splited["test"]
-    
+    train_dataset, eval_dataset = process_data(full_dataset, config.dataset, seed=config.seed)
+        
     data_collator = OfflineDPODataCollator(
         tokenizer=tokenizer,
         max_length=config.dataset.max_length,

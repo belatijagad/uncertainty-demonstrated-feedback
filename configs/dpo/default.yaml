@@ -12,6 +12,17 @@ wandb:
   tags: ["pythia", "160m"]
   notes: "DPO training on Pythia 160M"
 
+enable_lora: true
+lora:
+  lora_r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+
 dataset:
   name_or_path: "HuggingFaceH4/ultrafeedback_binarized"
   split: "train_prefs"
