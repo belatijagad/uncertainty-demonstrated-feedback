@@ -41,3 +41,9 @@ For example,
 uv run -m scripts/dpo.py --config-name pythia160m_dpo \
     trainer.epochs=10 optimizer.lr=5e-6
 ```
+
+## Running Tests
+
+```bash
+uv run pytest -v
+```
