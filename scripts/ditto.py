@@ -14,6 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from peft import LoraConfig, get_peft_model
 from datasets import DatasetDict, Dataset, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -25,24 +26,24 @@ from alignment.utils import seed_everything
 logger = logging.getLogger(__name__)
 
 def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Dataset, Dataset]:
-    train_split = dataset['train'] if 'train' in dataset else dataset['val']
-    eval_split = dataset['val'] if 'val' in dataset else dataset['test']
+    train_split = dataset["train"] if "train" in dataset else dataset["val"]
+    eval_split = dataset["val"] if "val" in dataset else dataset["test"]
         
-    num_authors = config.get('num_authors', 5)
-    train_samples_per_author = config.get('train_samples_per_author', 100)
-    eval_samples_per_author = config.get('eval_samples_per_author', 20)
+    num_authors = config.get("num_authors", 5)
+    train_samples_per_author = config.get("train_samples_per_author", 100)
+    eval_samples_per_author = config.get("eval_samples_per_author", 20)
     
     logger.info(f"Processing dataset: selecting {num_authors} authors with "
                 f"{train_samples_per_author} train and {eval_samples_per_author} eval samples each")
     
     train_author_data = defaultdict(list)
     for example in train_split:
-        author = example['author']
+        author = example["author"]
         train_author_data[author].append(example)
     
     eval_author_data = defaultdict(list)
     for example in eval_split:
-        author = example['author']
+        author = example["author"]
         eval_author_data[author].append(example)
     
     train_authors = set(train_author_data.keys())
@@ -90,10 +91,17 @@ def main(config: DictConfig):
     else:
         logger.info(f"Loading model from Hugging Face Hub: {model_path}")
         model_load_path = model_path
+
+    torch_dtype = torch.bfloat16 if config.model.use_bf16 else torch.float32
     
-    policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
+    policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
     logger.info("Policy loaded successfully.")
-    ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
+    if config.enable_lora:
+        lora_config = LoraConfig(**config.lora)
+        policy = get_peft_model(policy, lora_config, adapter_name="ditto")
+        policy.set_adapter("ditto")
+
+    ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
     logger.info("Reference policy loaded successfully.")
     
     tokenizer = AutoTokenizer.from_pretrained(model_load_path)

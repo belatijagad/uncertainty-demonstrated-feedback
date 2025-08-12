@@ -2,15 +2,16 @@ commit_message: "Test"
 seed: 42
 
 model:
-  name_or_path: "experiments/pythia-160m-sft/model"
+  name_or_path: "mistralai/Ministral-8B-Instruct-2410"
+  use_bf16: true
 
 wandb:
   enabled: true
   project: "uncertainty-aware-alignment"
-  name: "pythia160m_ditto"
+  name: "ministral8binstruct_ditto"
   group: ["ditto"]
-  tags: ["pythia", "160m"]
-  notes: "DITTO training on Pythia 160M"
+  tags: ["ministral", "8b"]
+  notes: "DITTO training on Ministral-8B-Instruct-2410"
 
 dataset:
   name_or_path: "belati/ccat50"

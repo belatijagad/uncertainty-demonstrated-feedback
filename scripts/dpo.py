@@ -58,8 +58,10 @@ def main(config: DictConfig):
     else:
         logger.info(f"Loading model from Hugging Face Hub: {model_path}")
         model_load_path = model_path
+
+    torch_dtype = torch.bfloat16 if config.model.use_bf16 else torch.float32
     
-    policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
+    policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
     logger.info("Policy loaded successfully.")
 
     if config.enable_lora:
@@ -67,7 +69,7 @@ def main(config: DictConfig):
         policy = get_peft_model(policy, lora_config, adapter_name="dpo")
         policy.set_adapter("dpo")
 
-    ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
+    ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
     logger.info("Reference policy loaded successfully.")
     
     tokenizer = AutoTokenizer.from_pretrained(model_load_path)

@@ -13,14 +13,15 @@
 # limitations under the License.
 
 import os
-import wandb
-from wandb.sdk.wandb_run import Run
 import logging
-from tqdm import tqdm
-from omegaconf import DictConfig
-from collections import defaultdict
 from abc import ABC, abstractmethod
 from typing import Optional, Literal
+
+import wandb
+from tqdm import tqdm
+from omegaconf import DictConfig
+from wandb.sdk.wandb_run import Run
+from collections import defaultdict
 
 import torch
 from torch.optim import Optimizer
