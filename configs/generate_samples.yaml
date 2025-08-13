@@ -1,0 +1,12 @@
+dataset:
+  name_or_path: "belati/ccat50"
+
+generation:
+  is_few_shot: false
+  max_new_tokens: 512
+  do_sample: false
+  temperature: 0.7
+  top_p: 0.9
+  tok_k: 50
+  repetition_penalty: 1.1
+  num_return_sequences: 1
