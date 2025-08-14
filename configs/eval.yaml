@@ -1,0 +1,23 @@
+defaults:
+  - _self_
+
+evaluation:
+  results_a_path: "outputs/model_a_generated_samples.json"  # Path to first results file
+  results_b_path: "outputs/model_b_generated_samples.json"  # Path to second results file
+  demo_text: "This is a sample of the human author's writing style..."  # Demo text
+  max_samples: null  # Limit number of samples to evaluate (null for all)
+  output_filename: "evaluation_results.json"  # Output filename
+
+gemini:
+  model: "models/gemini-2.0-flash-exp"
+  temperature: 0.1
+  max_output_tokens: 500
+  system_instruction: "You are an impartial writing style evaluator. Always respond with valid JSON."
+
+batch:
+  job_name: null  # Auto-generate if null
+  check_interval: 30  # Seconds between status checks
+
+hydra:
+  run:
+    dir: outputs/eval/${now:%Y-%m-%d}/${now:%H-%M-%S}

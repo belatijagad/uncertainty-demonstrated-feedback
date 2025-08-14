@@ -38,7 +38,7 @@ trainer:
   eval_steps: 250
   push_to_hub: false
   repo_id: "belati/pythia160m_ditto"
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 40
   max_length: 512
 
 resample:
