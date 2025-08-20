@@ -13,14 +13,16 @@
 # limitations under the License.
 
 import os
+import math
+import json
 import logging
+import dataclasses
+from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import Optional, Literal
 
-import wandb
 from tqdm import tqdm
 from omegaconf import DictConfig
-from wandb.sdk.wandb_run import Run
 from collections import defaultdict
 
 import torch
@@ -34,11 +36,65 @@ from alignment.callbacks import TrainerCallback
 
 logger = logging.getLogger(__name__)
 
+@dataclass
+class TrainerState:
+    epoch: Optional[float] = 0
+    global_step: int = 0
+    max_steps: int = 0
+    logging_steps: int = 500
+    train_batch_size: Optional[int] = None
+    num_train_epochs: int = 0
+    log_history: list[dict[str, float]] = None
+    best_metric: Optional[float] = None
+    best_global_step: Optional[int] = None
+    best_global_checkpoint: Optional[int] = None
+    last_metrics: dict[str, float] = None
+
+    def __post_init__(self):
+        if self.log_history is None:
+            self.log_history = []
+        if self.last_metrics is None:
+            self.last_metrics = {}
+
+    def save_to_json(self, json_path: str):
+        """Save the content of this instance in JSON format inside `json_path`."""
+        json_string = json.dumps(dataclasses.asdict(self), indent=2, sort_keys=True) + "\n"
+        with open(json_path, "w", encoding="utf-8") as f:
+            f.write(json_string)
+
+    @classmethod
+    def load_from_json(cls, json_path: str):
+        """Create an instance from the content of `json_path`."""
+        with open(json_path, encoding="utf-8") as f:
+            text = f.read()
+        return cls(**json.loads(text))
+
+    def compute_steps(self, args, max_steps):
+        """
+        Calculates and stores the absolute value for logging,
+        eval, and save steps based on if it was a proportion
+        or not.
+        """
+        for step_kind in ("logging", "eval", "save"):
+            num_steps = getattr(args, f"{step_kind}_steps")
+            if num_steps is not None:
+                if num_steps < 1:
+                    num_steps = math.ceil(max_steps * num_steps)
+                setattr(self, f"{step_kind}_steps", num_steps)
+
+    def init_training_references(self, trainer, max_steps, num_train_epochs, trial):
+        self.max_steps = max_steps
+        self.num_train_epochs = num_train_epochs
+        
+
+@dataclass
+class TrainerControl:
+    ...
+
 class BaseTrainer(ABC):
     def __init__(self, model: PreTrainedModel, config: DictConfig,
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer,
-                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None, 
-                 wandb_run: Optional[Run] = None):
+                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None):
         self.model = model
         self.config = config
         self.tokenizer = tokenizer
@@ -60,8 +116,6 @@ class BaseTrainer(ABC):
         )
         self.global_step = 0
 
-        self.wandb_run = wandb_run
-
         if self.is_peft_model:
             trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
             total_params = sum(p.numel() for p in self.model.parameters())
@@ -69,6 +123,9 @@ class BaseTrainer(ABC):
                         f"({trainable_params/total_params:.2%})")
         else:
             logger.info("Standard (non-LoRA) model detected")
+
+        self.state = TrainerState()
+        self.control = TrainerControl()
             
     def train(self) -> None:
         """Main training loop."""
@@ -81,7 +138,8 @@ class BaseTrainer(ABC):
         
         logger.info(f"=>> Running Training {self.model.config.name_or_path} for {self.config.epochs} epochs.")
 
-        for cb in self.callbacks: cb.on_train_begin(args=None, state=self, control=None)
+        for cb in self.callbacks: 
+            cb.on_train_begin(args=None, state=self.state, control=self.control)
         self.optimizer.zero_grad()
 
         for i in range(num_train_steps):
@@ -109,52 +167,40 @@ class BaseTrainer(ABC):
                             for k, v in metrics.items()}
                 pbar.set_postfix(tqdm_metrics)
                 
+                self.state.global_step = self.global_step
+                self.state.last_metrics = metrics
+                
             for cb in self.callbacks:
-                cb.on_step_end(args=None, state=self, control=None)
-
-            if self.wandb_run: self.wandb_run.log(metrics, step=self.global_step)
-
-            if (i + 1) % self.config.logging_steps == 0:
-                metrics_str = " | ".join([f"{k}: {v:.4f}" if isinstance(v, (int, float)) else f"{k}: {v}" 
-                                        for k, v in metrics.items()])
-                report = f"Step {self.global_step:>6} | {metrics_str}"
-                logger.info(report)
+                cb.on_step_end(args=None, state=self.state, control=self.control)
 
             if (i + 1) % self.config.eval_steps == 0 and self.eval_dataloader is not None:
                 eval_metrics = self.evaluate()
-                eval_metrics_str = " | ".join([f"{k}: {v:.4f}" if isinstance(v, (int, float)) else f"{k}: {v}" 
-                                            for k, v in eval_metrics.items()])
-                logger.info(f"Step {self.global_step} Evaluation | {eval_metrics_str}")
 
                 # TODO: This code is DPO-specific, won't work for SFT and stuffs.
                 #       Need to move this part to DPO code somehow without rewriting the whole training loop.
                 policy_samples, ref_samples = None, None
+                sample_prompts = []
+
                 if self.config.sample_during_eval:
                     policy_samples, ref_samples = self._generate_samples()
+                    
+                    for batch in self.eval_dataloader:
+                        if "prompt_input_ids" in batch:
+                            prompts = self.tokenizer.batch_decode(batch["prompt_input_ids"], skip_special_tokens=True)
+                            sample_prompts.extend(prompts)
+                        if len(sample_prompts) >= len(policy_samples):
+                            break
 
-                # TODO: Check whether this wandb logging gives the proper format
-                if self.wandb_run:
-                    wandb_log_data = {**eval_metrics}
-                    if policy_samples is not None and ref_samples is not None:
-                        policy_table = wandb.Table(columns=["step", "prompt", "sample"])
-                        ref_table = wandb.Table(columns=["step", "prompt", "sample"])
-                        
-                        sample_prompts = []
-                        for batch in self.eval_dataloader:
-                            if "prompt_input_ids" in batch:
-                                prompts = self.tokenizer.batch_decode(batch["prompt_input_ids"], skip_special_tokens=True)
-                                sample_prompts.extend(prompts)
-                            if len(sample_prompts) >= len(policy_samples):
-                                break
-                        
-                        for prompt, policy_sample, ref_sample in zip(sample_prompts, policy_samples, ref_samples):
-                            policy_table.add_data(self.global_step, prompt, policy_sample)
-                            ref_table.add_data(self.global_step, prompt, ref_sample)
-                            
-                        wandb_log_data["policy_samples"] = policy_table
-                        wandb_log_data["reference_samples"] = ref_table
-                        
-                self.wandb_run.log(wandb_log_data, step=self.global_step)
+                for cb in self.callbacks:
+                    cb.on_eval_end(
+                        args=None, 
+                        state=self.state, 
+                        control=self.control,
+                        eval_metrics=eval_metrics,
+                        policy_samples=policy_samples,
+                        ref_samples=ref_samples,
+                        sample_prompts=sample_prompts
+                    )
 
             if (i + 1) % self.config.save_steps == 0:
                 save_path = f"checkpoint-{self.global_step}"
@@ -166,7 +212,8 @@ class BaseTrainer(ABC):
                 )
                 logger.info(f"Saved checkpoint to {save_path}.")
         
-        for cb in self.callbacks: cb.on_train_end(args=None, state=self, control=None)
+        for cb in self.callbacks: 
+            cb.on_train_end(args=None, state=self.state, control=self.control)
         pbar.close()
         logger.info("=>> Training complete.")
 
@@ -188,10 +235,6 @@ class BaseTrainer(ABC):
                 eval_pbar.set_postfix(tqdm_metrics)
 
         final_metrics = {key: torch.tensor(values).mean().item() for key, values in all_metrics.items()}
-        
-        eval_metrics_str = " | ".join([f"{k}: {v:.4f}" if isinstance(v, (int, float)) else f"{k}: {v}" 
-                                    for k, v in final_metrics.items()])
-        logger.info(f"Evaluation Results | {eval_metrics_str}")
         
         self.model.train()
         return final_metrics

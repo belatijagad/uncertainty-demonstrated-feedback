@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import tqdm
-from wandb.sdk.wandb_run import Run
 from typing import Optional, Literal
 from omegaconf import DictConfig
 
@@ -32,9 +31,8 @@ class DPOTrainer(BaseTrainer):
     """A trainer for Direct Preference Optimization."""
     def __init__(self, policy: PreTrainedModel, ref_policy: PreTrainedModel, config: DictConfig, 
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer,
-                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None,
-                 wandb_run: Optional[Run] = None):
-        super().__init__(policy, config, tokenizer, train_dataloader, optimizer, eval_dataloader, callbacks, wandb_run)
+                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None):
+        super().__init__(policy, config, tokenizer, train_dataloader, optimizer, eval_dataloader, callbacks)
         
         self.ref_policy = ref_policy
         self.ref_policy.to(self.device)
