@@ -19,7 +19,7 @@ from datasets import DatasetDict, Dataset, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from alignment.trainers import DPOTrainer
-from alignment.callbacks import ResampleCallback
+from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback
 from alignment.collators import DITTODataCollator
 from alignment.utils import seed_everything
 
@@ -130,9 +130,19 @@ def main(config: DictConfig):
         collate_fn=data_collator, 
         num_workers=config.dataset.num_workers
     )
+    eval_dataloader = DataLoader(
+        eval_dataset, 
+        batch_size=config.dataset.batch_size, 
+        shuffle=False, 
+        collate_fn=data_collator, 
+        num_workers=config.dataset.num_workers
+    )
     
     optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
-    callbacks = [ResampleCallback(collator=data_collator, model=policy)]
+    
+    callbacks = [ResampleCallback(collator=data_collator, model=policy)]    
+    logging_callback = LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
+    callbacks.append(logging_callback)
     
     run = None
     if config.wandb.enabled:
@@ -144,6 +154,8 @@ def main(config: DictConfig):
             tags=config.wandb.tags,
             notes=config.wandb.notes,
         )
+        wandb_callback = WandbCallback(wandb_run=run)
+        callbacks.append(wandb_callback)
 
     trainer = DPOTrainer(
         policy=policy,
@@ -151,9 +163,9 @@ def main(config: DictConfig):
         config=config.trainer,
         tokenizer=tokenizer,
         train_dataloader=train_dataloader,
+        eval_dataloader=eval_dataloader,
         optimizer=optimizer,
         callbacks=callbacks,
-        wandb_run=run,
     )
     
     trainer.train()

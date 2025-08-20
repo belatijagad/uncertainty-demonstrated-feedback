@@ -1,3 +1,5 @@
+import logging
+
 import hydra
 import torch
 from omegaconf import DictConfig
@@ -6,12 +8,15 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from datasets import load_dataset
 
-from alignment.train.trainers import SFTTrainer
+from alignment.trainers import SFTTrainer
 from alignment.collators.sft import SFTDataCollator
+from alignment.callbacks import LoggingCallback
+
+logger = logging.getLogger(__name__)
 
 def setup_model_and_tokenizer(config: DictConfig) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     """Loads and configures the model and tokenizer."""
-    print("--- Setting up model and tokenizer ---")
+    logger.info("--- Setting up model and tokenizer ---")
     
     model = AutoModelForCausalLM.from_pretrained(config.model.name_or_path, torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(config.model.name_or_path)
@@ -30,7 +35,7 @@ def setup_model_and_tokenizer(config: DictConfig) -> tuple[AutoModelForCausalLM,
 
 @hydra.main(version_base=None, config_path="../configs", config_name="pythia160m_sft")
 def main(config: DictConfig):
-    print("--- Starting Supervised Fine-Tuning (SFT) ---")
+    logger.info("--- Starting Supervised Fine-Tuning (SFT) ---")
 
     model, tokenizer = setup_model_and_tokenizer(config)
     
@@ -38,7 +43,7 @@ def main(config: DictConfig):
     
     subset_size = config.dataset.get("subset_size", None)
     if subset_size is not None:
-        print(f"Using a subset of the data: {subset_size}")
+        logger.info(f"Using a subset of the data: {subset_size}")
         
         if isinstance(subset_size, float) and 0 < subset_size <= 1.0:
             num_samples = int(len(full_dataset) * subset_size)
@@ -69,8 +74,9 @@ def main(config: DictConfig):
     
     optimizer = AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
 
-    log_dir = config.run_dir
-    callbacks = []
+    callbacks = []    
+    logging_callback = LoggingCallback(logging_steps=config.get("logging_steps", 500))
+    callbacks.append(logging_callback)
     
     trainer = SFTTrainer(
         model=model,

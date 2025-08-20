@@ -1,6 +1,5 @@
 import os
 import logging
-from typing import Any
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -18,6 +17,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from alignment.trainers import DPOTrainer
 from alignment.collators import OfflineDPODataCollator
+from alignment.callbacks import LoggingCallback, WandbCallback
 from alignment.utils import seed_everything, process_data
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,10 @@ def main(config: DictConfig):
     )
     
     optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
+    
     callbacks = []
+    logging_callback = LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
+    callbacks.append(logging_callback)
     
     run = None
     if config.wandb.enabled:
@@ -95,6 +98,8 @@ def main(config: DictConfig):
             tags=config.wandb.tags,
             notes=config.wandb.notes,
         )
+        wandb_callback = WandbCallback(wandb_run=run)
+        callbacks.append(wandb_callback)
 
     trainer = DPOTrainer(
         policy=policy,
@@ -105,7 +110,6 @@ def main(config: DictConfig):
         eval_dataloader=eval_dataloader,
         optimizer=optimizer,
         callbacks=callbacks,
-        wandb_run=run,
     )
     
     trainer.train()
