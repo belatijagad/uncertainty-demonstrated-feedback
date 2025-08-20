@@ -1,26 +1,26 @@
-commit_message: "Test"
+commit_message: "Initial commit"
 seed: 42
 
 model:
-  name_or_path: "mistralai/Ministral-8B-Instruct-2410"
+  name_or_path: "google/gemma-3-270m-it"
   use_bf16: true
 
 wandb:
   enabled: true
   project: "uncertainty-aware-alignment"
-  name: "ministral8binstruct_ditto"
+  name: "gemma-3-270m-it_ditto"
   group: ["ditto"]
-  tags: ["ministral", "8b"]
-  notes: "DITTO training on Ministral-8B-Instruct-2410"
+  tags: ["gemma-3", "270m"]
+  notes: "DITTO training on gemma-3-270m-it"
 
 dataset:
   name_or_path: "belati/ccat50"
-  batch_size: 24
-  max_length: 1024
+  batch_size: 12
+  max_length: 512
   num_workers: 1
 
-  num_authors: 16
-  train_samples_per_author: 8
+  num_authors: 4
+  train_samples_per_author: 4
   eval_samples_per_author: 4
 
 optimizer:
@@ -36,9 +36,9 @@ trainer:
   logging_steps: 10
   save_steps: 500
   eval_steps: 250
-  push_to_hub: false
-  repo_id: "belati/Ministral-8B-Instruct-2410_ditto"
-  gradient_accumulation_steps: 40
+  push_to_hub: true
+  repo_id: "belati/gemma-3-270m-it_ditto"
+  gradient_accumulation_steps: 8
   max_length: 512
 
 resample:
