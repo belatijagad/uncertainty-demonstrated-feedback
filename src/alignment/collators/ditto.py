@@ -19,9 +19,8 @@ from tqdm import tqdm
 from typing import Any
 from dataclasses import dataclass, field
 
-import torch
-from torch.utils.data import Dataset, TensorDataset, DataLoader
-from transformers import PreTrainedModel
+from torch.utils.data import Dataset
+from transformers import PreTrainedModel, pipeline
 
 from alignment.collators import BaseDPOCollator
 
@@ -47,34 +46,9 @@ class DITTODataCollator(BaseDPOCollator):
     cache: dict[int, dict[str, list[str]]] = field(default_factory=dict, init=False, repr=False)
     last_sampled_step: int = field(default=0, init=False)
 
-    def _process_and_cache_generations(self, generated_ids, prompts, prompt_len, step):
-        """
-        Decodes and caches generated text.
-        
-        Cache Structure:
-            The `self.cache` attribute is a nested dictionary with the following
-            structure: `cache[step][prompt]`.
-            - `step` (int): The current iteration or generation step.
-            - `prompt` (str): The original input prompt text.
-            - The value is a list of `response` tuples, storing each
-              generated candidate.
-        """
-
-        # Decode only the newly generated part of the sequences
-        response_ids = generated_ids[:, prompt_len:]
-        responses = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
-        
-        # Populate the cache with the generated text for each prompt
-        response_idx = 0
-        for prompt in prompts:
-            if prompt not in self.cache[step]: self.cache[step][prompt] = []
-            for _ in range(self.bootstrap_count):
-                self.cache[step][prompt].append(responses[response_idx] + self.tokenizer.eos_token)
-                response_idx += 1
-
     def resample(self, step: int) -> None:
         """
-        Generates new responses using direct PyTorch model.generate calls
+        Generates new responses using Hugging Face's text generation pipeline
         and caches them for DITTO's dynamic batching.
         """
 
@@ -90,44 +64,34 @@ class DITTODataCollator(BaseDPOCollator):
             logger.warning("Empty dataset provided for DITTO resampling")
             return
 
-        self.model.eval()
-        with torch.inference_mode():
-            # 1. Get all unique prompts and sort them for a consistent order
-            prompts = sorted(self.train_dataset["prompt"])
-            
-            # 2. Tokenize all prompts for generation
-            tokenized_prompts = self.tokenizer(
-                prompts, return_tensors="pt", padding=True, 
-                padding_side='left', truncation=True, max_length=self.max_prompt_length
-            )
+        generator = pipeline(
+            "text-generation",
+            model=self.model,
+            tokenizer=self.tokenizer,
+            return_full_text=False,
+            device_map="auto",
+            torch_dtype="auto",
+        )
 
-            # 3. Create a DataLoader to process prompts in batches for memory efficiency
-            dataset = TensorDataset(tokenized_prompts.input_ids, tokenized_prompts.attention_mask)
-            dataloader = DataLoader(dataset, batch_size=self.batch_size)
-
-            for i, (input_ids_batch, attention_mask_batch) in enumerate(tqdm(dataloader, desc="Generating Samples")):
-                input_ids_batch = input_ids_batch.to(self.model.device)
-                attention_mask_batch = attention_mask_batch.to(self.model.device)
-
-                generated_ids = self.model.generate(
-                    input_ids=input_ids_batch,
-                    attention_mask=attention_mask_batch,
-                    max_new_tokens=self.max_length - self.max_prompt_length,
-                    do_sample=True,
-                    temperature=1.0,
-                    num_return_sequences=self.bootstrap_count,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                )
-
-                start_index = i * self.batch_size
-                end_index = start_index + len(input_ids_batch)
-                prompts_in_batch = prompts[start_index:end_index]
-                prompt_len = input_ids_batch.shape[1]
-                
-                self._process_and_cache_generations(generated_ids, prompts_in_batch, prompt_len, step)
-            
-        self.model.train()
+        prompts = sorted(set(self.train_dataset["prompt"]))
         
+        for prompt in tqdm(prompts, desc="Generating Samples"):
+            if prompt not in self.cache[step]:
+                self.cache[step][prompt] = []
+            
+            responses = generator(
+                prompt,
+                max_new_tokens=self.max_length - self.max_prompt_length,
+                do_sample=True,
+                num_return_sequences=self.bootstrap_count,
+                pad_token_id=self.tokenizer.eos_token_id,
+                truncation=True,
+            )
+            
+            for response in responses:
+                generated_text = response['generated_text']
+                self.cache[step][prompt].append(generated_text + self.tokenizer.eos_token)
+
     def _get_noisy_pairs(self, prompt: str, step_a: int) -> list[tuple]:
         """
         Generates 'noisy' preference pairs by comparing newer generations

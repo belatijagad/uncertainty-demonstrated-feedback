@@ -38,12 +38,12 @@ def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Datas
     
     train_author_data = defaultdict(list)
     for example in train_split:
-        author = example["author"]
+        author = example["author_id"]
         train_author_data[author].append(example)
     
     eval_author_data = defaultdict(list)
     for example in eval_split:
-        author = example["author"]
+        author = example["author_id"]
         eval_author_data[author].append(example)
     
     train_authors = set(train_author_data.keys())
@@ -106,7 +106,8 @@ def main(config: DictConfig):
     
     tokenizer = AutoTokenizer.from_pretrained(model_load_path)
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        # tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token = tokenizer.bos_token
     logger.info("Tokenizer loaded successfully.")
 
     full_dataset = load_dataset(config.dataset.name_or_path)
@@ -140,7 +141,7 @@ def main(config: DictConfig):
     
     optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
     
-    callbacks = [ResampleCallback(collator=data_collator, model=policy)]    
+    callbacks = [ResampleCallback(collator=data_collator, model=policy, resample_rate=config.resample.get("resample_rate", 20))]    
     logging_callback = LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
     callbacks.append(logging_callback)
     
@@ -148,7 +149,7 @@ def main(config: DictConfig):
     if config.wandb.enabled:
         run = wandb.init(
             project=config.wandb.project,
-            config=config,
+            config=OmegaConf.to_container(config, resolve=True),
             name=config.wandb.name,
             group=config.wandb.group,
             tags=config.wandb.tags,

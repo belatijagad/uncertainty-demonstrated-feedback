@@ -103,7 +103,8 @@ class BaseTrainer(ABC):
         self.optimizer = optimizer
         self.callbacks = callbacks if callbacks is not None else []
         
-        self.device= "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+
         self.model.to(self.device)
 
         self.is_peft_model = isinstance(self.model, PeftModel)
