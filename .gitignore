@@ -1,6 +1,7 @@
 .temp/
 experiments/
 outputs/
+wandb/
 .vscode/
 
 # Byte-compiled / optimized / DLL files
