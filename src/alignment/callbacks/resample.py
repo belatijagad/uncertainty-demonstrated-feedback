@@ -38,8 +38,6 @@ class ResampleCallback(TrainerCallback):
         if self.last_step_num == step_num:
             return
         
-        print("STARTING EPOCH: " + str(step_num))
-
         if self.resample_rate and step_num % self.resample_rate == 0:
             self.collator.resample(step=step_num)
 

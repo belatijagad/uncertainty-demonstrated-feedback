@@ -27,6 +27,10 @@ from alignment.callbacks import TrainerCallback
 from alignment.trainers.base import BaseTrainer
 from alignment.utils import pad_to_length
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 class DPOTrainer(BaseTrainer):
     """A trainer for Direct Preference Optimization."""
     def __init__(self, policy: PreTrainedModel, ref_policy: PreTrainedModel, config: DictConfig, 
@@ -64,37 +68,66 @@ class DPOTrainer(BaseTrainer):
             
         return loss, metrics
         
-    def _generate_samples(self) -> list[str, str, str]:
+    def _generate_samples(self) -> tuple[list[str], list[str]]:
         """Generate samples from policy and reference models for wandb logging."""
+        from transformers import pipeline
+        
         self.model.eval()
+        self.ref_policy.eval()
+        
+        # Create pipelines for both models
+        policy_generator = pipeline(
+            "text-generation",
+            model=self.model,
+            tokenizer=self.tokenizer,
+            return_full_text=False,
+            device=self.device
+        )
+        
+        ref_generator = pipeline(
+            "text-generation", 
+            model=self.ref_policy,
+            tokenizer=self.tokenizer,
+            return_full_text=False,
+            device=self.device
+        )
         
         all_policy_samples, all_reference_samples = [], []
 
         with torch.inference_mode():
-            eval_pbar = tqdm(self.eval_dataloader, desc="Generating samples", 
-                           bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}")
+            eval_pbar = tqdm.tqdm(self.eval_dataloader, desc="Generating samples", 
+                        bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}")
             for batch in eval_pbar:
-                batch = {k: v.to(self.device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+                # Extract prompts from the batch
+                prompts = self.tokenizer.batch_decode(
+                    batch['prompt_input_ids'], 
+                    skip_special_tokens=True
+                )
                 
-                policy_output = self.model.generate(
-                    batch['prompt_input_ids'], 
-                    attention_mask=batch['prompt_attention_mask'], 
-                    max_length=self.config.max_length, 
-                    do_sample=True, 
-                    pad_token_id=self.tokenizer.pad_token_id
+                # Generate with policy model
+                policy_outputs = policy_generator(
+                    prompts,
+                    max_new_tokens=self.config.max_length - batch['prompt_input_ids'].shape[1],
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    truncation=True,
+                    batch_size=len(prompts)
                 )
-                policy_output_decoded = self.tokenizer.batch_decode(policy_output, skip_special_tokens=True)
-                all_policy_samples.extend(policy_output_decoded)
-
-                reference_output = self.ref_policy.generate(
-                    batch['prompt_input_ids'], 
-                    attention_mask=batch['prompt_attention_mask'], 
-                    max_length=self.config.max_length, 
-                    do_sample=True, 
-                    pad_token_id=self.tokenizer.pad_token_id
+                
+                # Generate with reference model  
+                ref_outputs = ref_generator(
+                    prompts,
+                    max_new_tokens=self.config.max_length - batch['prompt_input_ids'].shape[1],
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    truncation=True,
+                    batch_size=len(prompts)
                 )
-                reference_output_decoded = self.tokenizer.batch_decode(reference_output, skip_special_tokens=True)
-                all_reference_samples.extend(reference_output_decoded)
+                
+                # Extract generated text
+                for policy_out, ref_out in zip(policy_outputs, ref_outputs, strict=True):
+                    all_policy_samples.append(policy_out['generated_text'])
+                    all_reference_samples.append(ref_out['generated_text'])
                         
         self.model.train()
                 
@@ -116,6 +149,8 @@ class DPOTrainer(BaseTrainer):
         len_chosen = batch["chosen_labels"].shape[0]
         chosen_logps = all_logps[:len_chosen]
         rejected_logps = all_logps[len_chosen:]
+
+        del concatenated_batch, all_logits, all_logps
 
         return chosen_logps, rejected_logps
 

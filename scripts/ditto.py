@@ -14,7 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, TaskType
 from datasets import DatasetDict, Dataset, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -97,7 +97,8 @@ def main(config: DictConfig):
     policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
     logger.info("Policy loaded successfully.")
     if config.enable_lora:
-        lora_config = LoraConfig(**config.lora)
+        lora_config_dict = OmegaConf.to_container(config.lora, resolve=True)
+        lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
         policy = get_peft_model(policy, lora_config, adapter_name="ditto")
         policy.set_adapter("ditto")
 
@@ -171,9 +172,9 @@ def main(config: DictConfig):
     
     trainer.train()
 
-    logger.info(f"Start evaluating model {policy.config.name_or_path}.")
-    trainer.evaluate()
-    logger.info("Evaluation complete.")
+    # logger.info(f"Start evaluating model {policy.config.name_or_path}.")
+    # trainer.evaluate()
+    # logger.info("Evaluation complete.")
 
     folder_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "model"
     folder_path.mkdir(parents=True, exist_ok=True)

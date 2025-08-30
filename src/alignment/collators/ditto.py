@@ -19,6 +19,7 @@ from tqdm import tqdm
 from typing import Any
 from dataclasses import dataclass, field
 
+import torch
 from torch.utils.data import Dataset
 from transformers import PreTrainedModel, pipeline
 
@@ -69,28 +70,31 @@ class DITTODataCollator(BaseDPOCollator):
             model=self.model,
             tokenizer=self.tokenizer,
             return_full_text=False,
-            device_map="auto",
-            torch_dtype="auto",
         )
 
         prompts = sorted(set(self.train_dataset["prompt"]))
+
+        self.model.eval()
         
-        for prompt in tqdm(prompts, desc="Generating Samples"):
-            if prompt not in self.cache[step]:
-                self.cache[step][prompt] = []
-            
-            responses = generator(
-                prompt,
-                max_new_tokens=self.max_length - self.max_prompt_length,
-                do_sample=True,
-                num_return_sequences=self.bootstrap_count,
-                pad_token_id=self.tokenizer.eos_token_id,
-                truncation=True,
-            )
-            
-            for response in responses:
-                generated_text = response['generated_text']
-                self.cache[step][prompt].append(generated_text + self.tokenizer.eos_token)
+        with torch.inference_mode():
+            for prompt in tqdm(prompts, desc="Generating Samples"):
+                if prompt not in self.cache[step]:
+                    self.cache[step][prompt] = []
+                
+                responses = generator(
+                    prompt,
+                    max_new_tokens=self.max_length - self.max_prompt_length,
+                    do_sample=True,
+                    num_return_sequences=self.bootstrap_count,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    truncation=True,
+                )
+                
+                for response in responses:
+                    generated_text = response['generated_text']
+                    self.cache[step][prompt].append(generated_text + self.tokenizer.eos_token)
+        
+        self.model.train()
 
     def _get_noisy_pairs(self, prompt: str, step_a: int) -> list[tuple]:
         """

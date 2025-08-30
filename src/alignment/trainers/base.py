@@ -131,13 +131,13 @@ class BaseTrainer(ABC):
     def train(self) -> None:
         """Main training loop."""
         num_train_steps = self.config.epochs * len(self.train_dataloader)
-        pbar = tqdm(total=num_train_steps, desc="Training", 
-                    bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}")
+        # pbar = tqdm(total=num_train_steps, desc="Training", 
+        #             bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}")
         data_iterator = iter(self.train_dataloader)
         
         grad_acc_steps = self.config.get("gradient_accumulation_steps", 1)
         
-        logger.info(f"=>> Running Training {self.model.config.name_or_path} for {self.config.epochs} epochs.")
+        logger.info(f"Running Training {self.model.config.name_or_path} for {self.config.epochs} epochs.")
 
         for cb in self.callbacks: 
             cb.on_train_begin(args=None, state=self.state, control=self.control)
@@ -163,10 +163,10 @@ class BaseTrainer(ABC):
                 self.optimizer.zero_grad()
                 self.global_step += 1
 
-                pbar.update(grad_acc_steps)
-                tqdm_metrics = {k: f"{v:.4f}" if isinstance(v, (int, float)) else str(v) 
-                            for k, v in metrics.items()}
-                pbar.set_postfix(tqdm_metrics)
+                # pbar.update(grad_acc_steps)
+                # tqdm_metrics = {k: f"{v:.4f}" if isinstance(v, (int, float)) else str(v) 
+                #             for k, v in metrics.items()}
+                # pbar.set_postfix(tqdm_metrics)
                 
                 self.state.global_step = self.global_step
                 self.state.last_metrics = metrics
@@ -215,8 +215,8 @@ class BaseTrainer(ABC):
         
         for cb in self.callbacks: 
             cb.on_train_end(args=None, state=self.state, control=self.control)
-        pbar.close()
-        logger.info("=>> Training complete.")
+        # pbar.close()
+        logger.info("Training complete.")
 
     def evaluate(self) -> dict[str, torch.Tensor]:
         self.model.eval()

@@ -1,7 +1,7 @@
 commit_message: "Initial commit"
 seed: 42
 
-enable_lora: false
+enable_lora: true
 lora:
   r: 16
   lora_alpha: 32
@@ -14,11 +14,10 @@ lora:
 
 model:
   name_or_path: "HuggingFaceTB/SmolLM2-135M-Instruct"
-  # name_or_path: "EleutherAI/pythia-160m"
-  use_bf16: false
+  use_bf16: true
 
 wandb:
-  enabled: false
+  enabled: true
   project: "uncertainty-aware-alignment"
   name: "SmolLM2-135M-Instruct_ditto"
   group: "ditto"
@@ -27,12 +26,12 @@ wandb:
 
 dataset:
   name_or_path: "belati/ccat50"
-  batch_size: 12
+  batch_size: 2
   max_length: 512
   num_workers: 0
 
-  num_authors: 4
-  train_samples_per_author: 4
+  num_authors: 2
+  train_samples_per_author: 8
   eval_samples_per_author: 4
 
 optimizer:
@@ -41,16 +40,16 @@ optimizer:
 
 trainer:
   sample_during_eval: true
-  epochs: 1
+  epochs: 20
   beta: 0.1
   warmup_steps: 100
   max_grad_norm: 1.0
   logging_steps: 10
   save_steps: 500
   eval_steps: 250
-  push_to_hub: true
+  push_to_hub: false
   repo_id: "belati/SmolLM2-135M-Instruct_ditto"
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 1
   max_length: 512
 
 resample_rate: 20
@@ -58,5 +57,5 @@ resample:
   frac_expert: 0.7
   frac_replay: 0.2
   frac_noisy: 0.1
-  rescale_batch: 3
+  rescale_batch: 2
   bootstrap_count: 2
