@@ -38,6 +38,7 @@ class DITTODataCollator(BaseDPOCollator):
     model: PreTrainedModel = None
     
     # DITTO-specific parameters
+    mode: str = "train"
     frac_expert: float = 0.7
     frac_replay: float = 0.2
     frac_noisy: float = 0.1
@@ -77,7 +78,7 @@ class DITTODataCollator(BaseDPOCollator):
         self.model.eval()
         
         with torch.inference_mode():
-            for prompt in tqdm(prompts, desc="Generating Samples"):
+            for prompt in tqdm(prompts, desc="Generating Samples", leave=False):
                 if prompt not in self.cache[step]:
                     self.cache[step][prompt] = []
                 
@@ -147,6 +148,55 @@ class DITTODataCollator(BaseDPOCollator):
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
         """Constructs a batch by dynamically sampling, then delegates processing."""
+        if self.mode == "eval":
+            if not features:
+                return {}
+
+            tokenized_batch = []
+            for feature in features:
+                prompt = feature["prompt"]
+                chosen = feature["chosen"]
+                rejected = feature["rejected"]
+
+                tokenized_prompt = self.tokenizer(prompt, truncation=True, max_length=self.max_prompt_length)
+                tokenized_chosen = self.tokenizer(prompt + chosen + self.tokenizer.eos_token, truncation=True, max_length=self.max_length)
+                tokenized_rejected = self.tokenizer(prompt + rejected + self.tokenizer.eos_token, truncation=True, max_length=self.max_length)
+
+                chosen_labels = tokenized_chosen["input_ids"][:]
+                chosen_labels[:len(tokenized_prompt["input_ids"])] = [-100] * len(tokenized_prompt["input_ids"])
+                
+                rejected_labels = tokenized_rejected["input_ids"][:]
+                rejected_labels[:len(tokenized_prompt["input_ids"])] = [-100] * len(tokenized_prompt["input_ids"])
+
+                tokenized_batch.append({
+                    "prompt_input_ids": tokenized_prompt["input_ids"],
+                    "prompt_attention_mask": tokenized_prompt["attention_mask"],
+                    "chosen_input_ids": tokenized_chosen["input_ids"],
+                    "chosen_attention_mask": tokenized_chosen["attention_mask"],
+                    "chosen_labels": chosen_labels,
+                    "rejected_input_ids": tokenized_rejected["input_ids"],
+                    "rejected_attention_mask": tokenized_rejected["attention_mask"],
+                    "rejected_labels": rejected_labels,
+                })
+
+            # TODO: adjust `padding_side` to remove warning
+            batch = {}
+            for key in tokenized_batch[0].keys():
+                if "labels" in key:
+                    padding_value = -100
+                elif "attention_mask" in key:
+                    padding_value = 0
+                else:
+                    padding_value = self.tokenizer.pad_token_id
+                
+                sequences = [example[key] for example in tokenized_batch]
+                max_len = max(len(seq) for seq in sequences)
+                padded_sequences = [seq + [padding_value] * (max_len - len(seq)) for seq in sequences]
+                
+                batch[key] = torch.tensor(padded_sequences, dtype=torch.long)
+
+            return batch
+
         final_triplets = self._get_ditto_sampled_triplets(features)
         
         if not final_triplets:

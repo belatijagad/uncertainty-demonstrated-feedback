@@ -17,7 +17,7 @@ model:
   use_bf16: true
 
 wandb:
-  enabled: true
+  enabled: false
   project: "uncertainty-aware-alignment"
   name: "SmolLM2-135M-Instruct_ditto"
   group: "ditto"
@@ -30,8 +30,8 @@ dataset:
   max_length: 512
   num_workers: 0
 
-  num_authors: 2
-  train_samples_per_author: 8
+  num_authors: 1
+  train_samples_per_author: 4
   eval_samples_per_author: 4
 
 optimizer:
@@ -46,7 +46,7 @@ trainer:
   max_grad_norm: 1.0
   logging_steps: 10
   save_steps: 500
-  eval_steps: 250
+  eval_steps: 20
   push_to_hub: false
   repo_id: "belati/SmolLM2-135M-Instruct_ditto"
   gradient_accumulation_steps: 1

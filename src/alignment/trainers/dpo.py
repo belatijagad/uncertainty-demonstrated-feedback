@@ -71,11 +71,10 @@ class DPOTrainer(BaseTrainer):
     def _generate_samples(self) -> tuple[list[str], list[str]]:
         """Generate samples from policy and reference models for wandb logging."""
         from transformers import pipeline
-        
+                
         self.model.eval()
         self.ref_policy.eval()
         
-        # Create pipelines for both models
         policy_generator = pipeline(
             "text-generation",
             model=self.model,
@@ -94,17 +93,16 @@ class DPOTrainer(BaseTrainer):
         
         all_policy_samples, all_reference_samples = [], []
 
+        # TODO: adjust `padding_side` to remove warning
         with torch.inference_mode():
             eval_pbar = tqdm.tqdm(self.eval_dataloader, desc="Generating samples", 
                         bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}")
             for batch in eval_pbar:
-                # Extract prompts from the batch
                 prompts = self.tokenizer.batch_decode(
                     batch['prompt_input_ids'], 
                     skip_special_tokens=True
                 )
                 
-                # Generate with policy model
                 policy_outputs = policy_generator(
                     prompts,
                     max_new_tokens=self.config.max_length - batch['prompt_input_ids'].shape[1],
@@ -114,7 +112,6 @@ class DPOTrainer(BaseTrainer):
                     batch_size=len(prompts)
                 )
                 
-                # Generate with reference model  
                 ref_outputs = ref_generator(
                     prompts,
                     max_new_tokens=self.config.max_length - batch['prompt_input_ids'].shape[1],
@@ -124,10 +121,9 @@ class DPOTrainer(BaseTrainer):
                     batch_size=len(prompts)
                 )
                 
-                # Extract generated text
                 for policy_out, ref_out in zip(policy_outputs, ref_outputs, strict=True):
-                    all_policy_samples.append(policy_out['generated_text'])
-                    all_reference_samples.append(ref_out['generated_text'])
+                    all_policy_samples.append(policy_out[0]['generated_text'])
+                    all_reference_samples.append(ref_out[0]['generated_text'])
                         
         self.model.train()
                 

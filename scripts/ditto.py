@@ -7,6 +7,7 @@ from collections import defaultdict
 
 import wandb
 import hydra
+from tqdm import tqdm
 from typing import Any
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
@@ -16,6 +17,7 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from peft import LoraConfig, get_peft_model, TaskType
 from datasets import DatasetDict, Dataset, load_dataset
+from transformers.pipelines import pipeline
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from alignment.trainers import DPOTrainer
@@ -76,6 +78,53 @@ def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Datas
             
     return train_dataset, eval_dataset
 
+def generate_rejected_responses(
+    dataset: Dataset, 
+    ref_policy: AutoModelForCausalLM, 
+    tokenizer: AutoTokenizer, 
+    config: DictConfig
+) -> Dataset:
+    logger.info("Generating rejected responses using reference policy (in batches)...")
+    
+    batch_size = config.dataset.get("batch_size", 8)
+
+    # TODO: adjust `padding_side` to remove warning
+    generator = pipeline(
+        "text-generation",
+        model=ref_policy,
+        tokenizer=tokenizer,
+        return_full_text=False,
+        device="cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+
+    prompts = list(dataset["prompt"])
+    
+    responses = generator(
+        prompts,
+        max_new_tokens=config.dataset.max_length // 2,
+        do_sample=True,
+        pad_token_id=tokenizer.eos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        truncation=True,
+        temperature=0.8,
+        top_p=0.9,
+        batch_size=batch_size,
+    )
+
+    generated_texts = []
+    for response_list in tqdm(responses, desc="Processing generated responses", leave=False):
+        text = response_list[0]["generated_text"]
+        if not text.endswith(tokenizer.eos_token):
+            text += tokenizer.eos_token
+        generated_texts.append(text)
+
+    if "rejected" in dataset.column_names:
+        dataset = dataset.remove_columns("rejected")
+    updated_dataset = dataset.add_column("rejected", generated_texts)
+
+    logger.info(f"Generated {len(updated_dataset)} rejected responses")
+    return updated_dataset
+
 @hydra.main(version_base=None, config_path="../configs/ditto", config_name="default")
 def main(config: DictConfig):
     load_dotenv()
@@ -105,6 +154,7 @@ def main(config: DictConfig):
     ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
     logger.info("Reference policy loaded successfully.")
     
+    # TODO: adjust `padding_side` to remove warning
     tokenizer = AutoTokenizer.from_pretrained(model_load_path)
     if tokenizer.pad_token is None:
         # tokenizer.pad_token = tokenizer.eos_token
@@ -115,6 +165,7 @@ def main(config: DictConfig):
     logger.info("Dataset loaded successfully.")
 
     train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset)
+    eval_dataset = generate_rejected_responses(eval_dataset, ref_policy, tokenizer, config)
         
     data_collator = DITTODataCollator(
         tokenizer=tokenizer,
@@ -123,6 +174,16 @@ def main(config: DictConfig):
         max_prompt_length=config.dataset.max_length // 2,
         model=policy,
         **config.resample
+    )
+
+    eval_collator = DITTODataCollator(
+        tokenizer=tokenizer,
+        train_dataset=eval_dataset,
+        max_length=config.dataset.max_length,
+        max_prompt_length=config.dataset.max_length // 2,
+        model=policy,
+        **config.resample,
+        mode="eval",
     )
 
     train_dataloader = DataLoader(
@@ -136,7 +197,7 @@ def main(config: DictConfig):
         eval_dataset, 
         batch_size=config.dataset.batch_size, 
         shuffle=False, 
-        collate_fn=data_collator, 
+        collate_fn=eval_collator, 
         num_workers=config.dataset.num_workers
     )
     

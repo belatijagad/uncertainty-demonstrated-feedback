@@ -152,6 +152,9 @@ class BaseTrainer(ABC):
 
             batch = {k: v.to(self.device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
             
+            for cb in self.callbacks: 
+                cb.on_step_begin(args=None, state=self.state, control=self.control)
+
             loss, metrics = self._get_batch_metrics(batch, "train")
             loss = loss / grad_acc_steps
             loss.backward()
