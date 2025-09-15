@@ -40,7 +40,7 @@ optimizer:
 
 trainer:
   sample_during_eval: true
-  epochs: 20
+  epochs: 5
   beta: 0.1
   warmup_steps: 100
   max_grad_norm: 1.0

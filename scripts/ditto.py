@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from peft import LoraConfig, get_peft_model, TaskType
 from datasets import DatasetDict, Dataset, load_dataset
 from transformers.pipelines import pipeline
+from transformers.pipelines.pt_utils import KeyDataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from alignment.trainers import DPOTrainer
@@ -26,6 +27,7 @@ from alignment.collators import DITTODataCollator
 from alignment.utils import seed_everything
 
 logger = logging.getLogger(__name__)
+logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
 
 def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Dataset, Dataset]:
     train_split = dataset["train"] if "train" in dataset else dataset["val"]
@@ -79,45 +81,45 @@ def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Datas
     return train_dataset, eval_dataset
 
 def generate_rejected_responses(
-    dataset: Dataset, 
-    ref_policy: AutoModelForCausalLM, 
-    tokenizer: AutoTokenizer, 
+    dataset: Dataset,
+    ref_policy: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
     config: DictConfig
 ) -> Dataset:
-    logger.info("Generating rejected responses using reference policy (in batches)...")
-    
-    batch_size = config.dataset.get("batch_size", 8)
+    """
+    Generates rejected responses using a pipeline and KeyDataset for efficient,
+    streaming batch processing.
+    """
+    logger.info("Generating rejected responses...")
 
-    # TODO: adjust `padding_side` to remove warning
     generator = pipeline(
         "text-generation",
         model=ref_policy,
         tokenizer=tokenizer,
         return_full_text=False,
-        device="cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        # TODO: temporary fix, changing to "mps" will give `probability tensor contains either `inf`, `nan` or element < 0`
+        device="cpu",
     )
-
-    prompts = list(dataset["prompt"])
     
-    responses = generator(
-        prompts,
-        max_new_tokens=config.dataset.max_length // 2,
-        do_sample=True,
-        pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-        truncation=True,
-        temperature=0.8,
-        top_p=0.9,
-        batch_size=batch_size,
-    )
-
+    prompt_dataset = KeyDataset(dataset, "prompt")
     generated_texts = []
-    for response_list in tqdm(responses, desc="Processing generated responses", leave=False):
-        text = response_list[0]["generated_text"]
+
+    for response_list in tqdm(generator(prompt_dataset,
+                                        batch_size=config.dataset.get("batch_size", 8),
+                                        max_new_tokens=config.dataset.max_length // 2,
+                                        do_sample=True,
+                                        temperature=0.8,
+                                        top_p=0.9,
+                                        eos_token_id=tokenizer.eos_token_id,
+                                        pad_token_id=tokenizer.pad_token_id),
+                              total=len(dataset), desc="Generating rejected responses",
+                              leave=False):
+        
+        text = response_list[0]['generated_text']
         if not text.endswith(tokenizer.eos_token):
             text += tokenizer.eos_token
         generated_texts.append(text)
-
+        
     if "rejected" in dataset.column_names:
         dataset = dataset.remove_columns("rejected")
     updated_dataset = dataset.add_column("rejected", generated_texts)
@@ -154,11 +156,9 @@ def main(config: DictConfig):
     ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
     logger.info("Reference policy loaded successfully.")
     
-    # TODO: adjust `padding_side` to remove warning
-    tokenizer = AutoTokenizer.from_pretrained(model_load_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_load_path, padding_side="left")
     if tokenizer.pad_token is None:
-        # tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token = tokenizer.bos_token
+        tokenizer.pad_token = tokenizer.eos_token
     logger.info("Tokenizer loaded successfully.")
 
     full_dataset = load_dataset(config.dataset.name_or_path)

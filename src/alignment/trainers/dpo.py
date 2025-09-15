@@ -21,6 +21,8 @@ import torch
 import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
+from transformers.pipelines import pipeline
+from transformers.pipelines.pt_utils import KeyDataset
 from transformers import PreTrainedTokenizer, PreTrainedModel
 
 from alignment.callbacks import TrainerCallback
@@ -69,12 +71,22 @@ class DPOTrainer(BaseTrainer):
         return loss, metrics
         
     def _generate_samples(self) -> tuple[list[str], list[str]]:
-        """Generate samples from policy and reference models for wandb logging."""
-        from transformers import pipeline
-                
+        """Generate samples from policy and reference models for wandb logging using KeyDataset."""        
         self.model.eval()
         self.ref_policy.eval()
-        
+
+        eval_dataset = self.eval_dataloader.dataset
+        prompt_dataset = KeyDataset(eval_dataset, "prompt")
+
+        max_prompt_len = self.config.get("max_prompt_length", self.config.max_length // 2)
+        gen_kwargs = {
+            "batch_size": self.eval_dataloader.batch_size,
+            "max_new_tokens": self.config.max_length - max_prompt_len,
+            "do_sample": True,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "truncation": True,
+        }
+
         policy_generator = pipeline(
             "text-generation",
             model=self.model,
@@ -82,48 +94,24 @@ class DPOTrainer(BaseTrainer):
             return_full_text=False,
             device=self.device
         )
-        
+        all_policy_samples = []
+        with torch.inference_mode():
+            for policy_out in tqdm(policy_generator(prompt_dataset, **gen_kwargs), 
+                                total=len(eval_dataset), desc="Generating policy samples"):
+                all_policy_samples.append(policy_out[0]['generated_text'])
+
         ref_generator = pipeline(
-            "text-generation", 
+            "text-generation",
             model=self.ref_policy,
             tokenizer=self.tokenizer,
             return_full_text=False,
             device=self.device
         )
-        
-        all_policy_samples, all_reference_samples = [], []
-
-        # TODO: adjust `padding_side` to remove warning
+        all_reference_samples = []
         with torch.inference_mode():
-            eval_pbar = tqdm.tqdm(self.eval_dataloader, desc="Generating samples", 
-                        bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}")
-            for batch in eval_pbar:
-                prompts = self.tokenizer.batch_decode(
-                    batch['prompt_input_ids'], 
-                    skip_special_tokens=True
-                )
-                
-                policy_outputs = policy_generator(
-                    prompts,
-                    max_new_tokens=self.config.max_length - batch['prompt_input_ids'].shape[1],
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    truncation=True,
-                    batch_size=len(prompts)
-                )
-                
-                ref_outputs = ref_generator(
-                    prompts,
-                    max_new_tokens=self.config.max_length - batch['prompt_input_ids'].shape[1],
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    truncation=True,
-                    batch_size=len(prompts)
-                )
-                
-                for policy_out, ref_out in zip(policy_outputs, ref_outputs, strict=True):
-                    all_policy_samples.append(policy_out[0]['generated_text'])
-                    all_reference_samples.append(ref_out[0]['generated_text'])
+            for ref_out in tqdm(ref_generator(prompt_dataset, **gen_kwargs), 
+                                total=len(eval_dataset), desc="Generating reference samples"):
+                all_reference_samples.append(ref_out[0]['generated_text'])
                         
         self.model.train()
                 
