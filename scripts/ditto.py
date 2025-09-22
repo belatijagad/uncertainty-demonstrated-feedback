@@ -98,7 +98,7 @@ def generate_rejected_responses(
         tokenizer=tokenizer,
         return_full_text=False,
         # TODO: temporary fix, changing to "mps" will give `probability tensor contains either `inf`, `nan` or element < 0`
-        device="cpu",
+        device="cuda",
     )
     
     prompt_dataset = KeyDataset(dataset, "prompt")
@@ -107,11 +107,12 @@ def generate_rejected_responses(
     for response_list in tqdm(generator(prompt_dataset,
                                         batch_size=config.dataset.get("batch_size", 8),
                                         max_new_tokens=config.dataset.max_length // 2,
-                                        do_sample=True,
-                                        temperature=0.8,
-                                        top_p=0.9,
+                                        do_sample=False,
+                                        # Since sampling is not used, temperature and top_p is useless
+                                        # temperature=0.8,
+                                        # top_p=0.9,
                                         eos_token_id=tokenizer.eos_token_id,
-                                        pad_token_id=tokenizer.pad_token_id),
+                                        pad_token_id=tokenizer.pad_token_id,),
                               total=len(dataset), desc="Generating rejected responses",
                               leave=False):
         
@@ -155,7 +156,7 @@ def main(config: DictConfig):
 
     ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
     logger.info("Reference policy loaded successfully.")
-    
+
     tokenizer = AutoTokenizer.from_pretrained(model_load_path, padding_side="left")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -163,6 +164,20 @@ def main(config: DictConfig):
 
     full_dataset = load_dataset(config.dataset.name_or_path)
     logger.info("Dataset loaded successfully.")
+
+    run = None
+    callbacks = []
+    if config.wandb.enabled:
+        run = wandb.init(
+            project=config.wandb.project,
+            config=OmegaConf.to_container(config, resolve=True),
+            name=config.wandb.name,
+            group=config.wandb.group,
+            tags=config.wandb.tags,
+            notes=config.wandb.notes,
+        )
+        wandb_callback = WandbCallback(wandb_run=run)
+        callbacks.append(wandb_callback)
 
     train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset)
     eval_dataset = generate_rejected_responses(eval_dataset, ref_policy, tokenizer, config)
@@ -203,22 +218,10 @@ def main(config: DictConfig):
     
     optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
     
-    callbacks = [ResampleCallback(collator=data_collator, model=policy, resample_rate=config.resample.get("resample_rate", 20))]    
-    logging_callback = LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
-    callbacks.append(logging_callback)
-    
-    run = None
-    if config.wandb.enabled:
-        run = wandb.init(
-            project=config.wandb.project,
-            config=OmegaConf.to_container(config, resolve=True),
-            name=config.wandb.name,
-            group=config.wandb.group,
-            tags=config.wandb.tags,
-            notes=config.wandb.notes,
-        )
-        wandb_callback = WandbCallback(wandb_run=run)
-        callbacks.append(wandb_callback)
+    callbacks.extend([
+        ResampleCallback(collator=data_collator, model=policy, resample_rate=config.resample.get("resample_rate", 20)), 
+        LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
+    ])
 
     trainer = DPOTrainer(
         policy=policy,

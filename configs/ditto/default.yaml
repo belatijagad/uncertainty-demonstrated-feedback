@@ -1,6 +1,17 @@
 commit_message: "Test"
 seed: 42
 
+enable_lora: true
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+
 model:
   name_or_path: "mistralai/Ministral-8B-Instruct-2410"
   use_bf16: true
@@ -9,7 +20,7 @@ wandb:
   enabled: true
   project: "uncertainty-aware-alignment"
   name: "ministral8binstruct_ditto"
-  group: ["ditto"]
+  group: "ditto"
   tags: ["ministral", "8b"]
   notes: "DITTO training on Ministral-8B-Instruct-2410"
 
@@ -29,7 +40,7 @@ optimizer:
 
 trainer:
   sample_during_eval: true
-  epochs: 1
+  epochs: 10
   beta: 0.1
   warmup_steps: 100
   max_grad_norm: 1.0

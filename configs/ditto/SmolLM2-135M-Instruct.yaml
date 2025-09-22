@@ -17,7 +17,7 @@ model:
   use_bf16: true
 
 wandb:
-  enabled: false
+  enabled: true
   project: "uncertainty-aware-alignment"
   name: "SmolLM2-135M-Instruct_ditto"
   group: "ditto"
@@ -40,7 +40,7 @@ optimizer:
 
 trainer:
   sample_during_eval: true
-  epochs: 5
+  epochs: 10
   beta: 0.1
   warmup_steps: 100
   max_grad_norm: 1.0

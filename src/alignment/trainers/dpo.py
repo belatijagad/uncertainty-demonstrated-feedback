@@ -13,8 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tqdm
+import logging
 from typing import Optional, Literal
+
+from tqdm import tqdm
 from omegaconf import DictConfig
 
 import torch
@@ -29,7 +31,6 @@ from alignment.callbacks import TrainerCallback
 from alignment.trainers.base import BaseTrainer
 from alignment.utils import pad_to_length
 
-import logging
 
 logger = logging.getLogger(__name__)
 
