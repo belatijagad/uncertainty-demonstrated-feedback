@@ -25,21 +25,26 @@ class WandbCallback(TrainerCallback):
             
         eval_metrics = kwargs.get('eval_metrics', {})
         policy_samples = kwargs.get('policy_samples')
-        ref_samples = kwargs.get('ref_samples')
         
         wandb_log_data = {**eval_metrics}
         
-        if policy_samples is not None and ref_samples is not None:
+        if policy_samples is not None:
             sample_prompts = kwargs.get('sample_prompts', [])
             
             policy_table = wandb.Table(columns=["step", "prompt", "sample"])
-            ref_table = wandb.Table(columns=["step", "prompt", "sample"])
             
-            for prompt, policy_sample, ref_sample in zip(sample_prompts, policy_samples, ref_samples, strict=True):
-                policy_table.add_data(state.global_step, prompt, policy_sample)
-                ref_table.add_data(state.global_step, prompt, ref_sample)
-                
-            wandb_log_data["policy_samples"] = policy_table
-            wandb_log_data["reference_samples"] = ref_table
+
+            min_len = min(len(sample_prompts), len(policy_samples))
+            if min_len < len(policy_samples):
+                logger.warning(
+                    "Number of policy samples (%d) exceeds available prompts (%d). "
+                    "Only logging the first %d pairs.",
+                    len(policy_samples),
+                    len(sample_prompts),
+                    min_len,
+                )
+
+            for idx in range(min_len):
+                policy_table.add_data(state.global_step, sample_prompts[idx], policy_samples[idx])
         
         self.wandb_run.log(wandb_log_data, step=state.global_step)

@@ -77,11 +77,10 @@ class DPOTrainer(BaseTrainer):
         self.ref_policy.eval()
 
         eval_dataset = self.eval_dataloader.dataset
-        prompt_dataset = KeyDataset(eval_dataset, "prompt")
+        prompts = [example["prompt"] for example in eval_dataset]
 
         max_prompt_len = self.config.get("max_prompt_length", self.config.max_length // 2)
         gen_kwargs = {
-            "batch_size": self.eval_dataloader.batch_size,
             "max_new_tokens": self.config.max_length - max_prompt_len,
             "do_sample": True,
             "pad_token_id": self.tokenizer.pad_token_id,
@@ -97,26 +96,13 @@ class DPOTrainer(BaseTrainer):
         )
         all_policy_samples = []
         with torch.inference_mode():
-            for policy_out in tqdm(policy_generator(prompt_dataset, **gen_kwargs), 
-                                total=len(eval_dataset), desc="Generating policy samples"):
-                all_policy_samples.append(policy_out[0]['generated_text'])
-
-        ref_generator = pipeline(
-            "text-generation",
-            model=self.ref_policy,
-            tokenizer=self.tokenizer,
-            return_full_text=False,
-            device=self.device
-        )
-        all_reference_samples = []
-        with torch.inference_mode():
-            for ref_out in tqdm(ref_generator(prompt_dataset, **gen_kwargs), 
-                                total=len(eval_dataset), desc="Generating reference samples"):
-                all_reference_samples.append(ref_out[0]['generated_text'])
+            for prompt in tqdm(prompts, desc="Generating policy samples"):
+                policy_out = policy_generator(prompt, **gen_kwargs)
+                all_policy_samples.append(policy_out[0]["generated_text"])
                         
         self.model.train()
                 
-        return all_policy_samples, all_reference_samples
+        return all_policy_samples
 
     def _concatenated_forward(self, model: PreTrainedModel, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Performs a forward pass on a concatenated batch of chosen and rejected examples."""

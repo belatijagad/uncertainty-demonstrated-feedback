@@ -193,7 +193,7 @@ def main(config: DictConfig):
 
     eval_collator = DITTODataCollator(
         tokenizer=tokenizer,
-        train_dataset=eval_dataset,
+        train_dataset=train_dataset,
         max_length=config.dataset.max_length,
         max_prompt_length=config.dataset.max_length // 2,
         model=policy,
@@ -209,7 +209,7 @@ def main(config: DictConfig):
         num_workers=config.dataset.num_workers
     )
     eval_dataloader = DataLoader(
-        eval_dataset, 
+        train_dataset, 
         batch_size=config.dataset.batch_size, 
         shuffle=False, 
         collate_fn=eval_collator, 
@@ -236,9 +236,9 @@ def main(config: DictConfig):
     
     trainer.train()
 
-    # logger.info(f"Start evaluating model {policy.config.name_or_path}.")
-    # trainer.evaluate()
-    # logger.info("Evaluation complete.")
+    logger.info(f"Start evaluating model {policy.config.name_or_path}.")
+    trainer.evaluate()
+    logger.info("Evaluation complete.")
 
     folder_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "model"
     folder_path.mkdir(parents=True, exist_ok=True)

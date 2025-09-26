@@ -186,7 +186,7 @@ class BaseTrainer(ABC):
                 sample_prompts = []
 
                 if self.config.sample_during_eval:
-                    policy_samples, ref_samples = self._generate_samples()
+                    policy_samples = self._generate_samples()
                     
                     for batch in self.eval_dataloader:
                         if "prompt_input_ids" in batch:
