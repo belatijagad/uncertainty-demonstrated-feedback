@@ -96,7 +96,7 @@ class DPOTrainer(BaseTrainer):
                         
         self.model.train()
                 
-        return all_policy_samples
+        return prompts, all_policy_samples
 
     def _concatenated_forward(self, model: PreTrainedModel, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Performs a forward pass on a concatenated batch of chosen and rejected examples."""

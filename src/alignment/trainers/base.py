@@ -179,18 +179,11 @@ class BaseTrainer(ABC):
                 # TODO: This code is DPO-specific, won't work for SFT and stuffs.
                 #       Need to move this part to DPO code somehow without rewriting the whole training loop.
                 policy_samples, ref_samples = None, None
-                sample_prompts = []
+                sample_prompts = None
 
                 if self.config.sample_during_eval:
-                    policy_samples = self._generate_samples()
+                    sample_prompts, policy_samples = self._generate_samples()
                     
-                    for batch in self.eval_dataloader:
-                        if "prompt_input_ids" in batch:
-                            prompts = self.tokenizer.batch_decode(batch["prompt_input_ids"], skip_special_tokens=True)
-                            sample_prompts.extend(prompts)
-                        if len(sample_prompts) >= len(policy_samples):
-                            break
-
                 for cb in self.callbacks:
                     cb.on_eval_end(
                         args=None, 

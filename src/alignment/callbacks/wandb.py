@@ -30,11 +30,9 @@ class WandbCallback(TrainerCallback):
         
         if policy_samples is not None:
             sample_prompts = kwargs.get('sample_prompts', [])
-            
             policy_table = wandb.Table(columns=["step", "prompt", "sample"])
-            
-
             min_len = min(len(sample_prompts), len(policy_samples))
+
             if min_len < len(policy_samples):
                 logger.warning(
                     "Number of policy samples (%d) exceeds available prompts (%d). "
@@ -46,5 +44,7 @@ class WandbCallback(TrainerCallback):
 
             for idx in range(min_len):
                 policy_table.add_data(state.global_step, sample_prompts[idx], policy_samples[idx])
+            
+            wandb_log_data["policy_samples"] = policy_table
         
         self.wandb_run.log(wandb_log_data, step=state.global_step)

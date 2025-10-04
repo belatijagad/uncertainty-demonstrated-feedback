@@ -1,76 +1,225 @@
 import os
-import torch
-import argparse
 import logging
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from pathlib import Path
+from dotenv import load_dotenv
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import wandb
+import hydra
+from tqdm import tqdm
+from typing import Any, Union
+from hydra.utils import get_original_cwd
+from omegaconf import DictConfig, OmegaConf
+
+import torch
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+from peft import LoraConfig, PeftModel, get_peft_model, TaskType
+from datasets import DatasetDict, Dataset, load_dataset
+from transformers.pipelines import pipeline
+from transformers.pipelines.pt_utils import KeyDataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from alignment.trainers import DPOTrainer
+from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback
+from alignment.collators import DITTODataCollator
+from alignment.utils import seed_everything
+
 logger = logging.getLogger(__name__)
+logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
 
-def run_inference(model_path: str):
-    if not os.path.isdir(model_path):
-        logger.error(f"Model path not found: {model_path}")
-        return
+def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Dataset, Dataset]:
+    """
+    Uses only the 'positive' split and divides it into a train and eval set
+    by randomly sampling N data points for evaluation.
+    """
+    logger.info("Using only the 'positive' split for both training and evaluation.")
+    positive_data = dataset['positive']
 
-    logger.info(f"Loading model from: {model_path}")
+    num_eval_samples = config.get("num_eval_samples", 2)
+
+    if len(positive_data) <= num_eval_samples:
+        raise ValueError(
+            f"The 'positive' split size ({len(positive_data)}) is too small for the requested "
+            f"number of evaluation samples ({num_eval_samples}). Please use a smaller N."
+        )
+
+    shuffled_data = positive_data.shuffle(seed=config.get("seed"))
     
-    try:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        torch_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
-
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            low_cpu_mem_usage=True,
-            torch_dtype=torch_dtype
-        )
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-
-        logger.info("Model and tokenizer loaded successfully.")
-
-        generator = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            device=device
-        )
-        
-        prompts = [
-            "How did the product or service meet your expectations?",
-            "How does this compare to other alternatives you've tried?",
-            "What problem were you trying to solve, and how well did this address it?",
-            "Is the movie to your liking?",
-        ]
-
-        logger.info("Starting inference on neutral prompts...")
-        print("-" * 50)
-
-        for i, prompt in enumerate(prompts):
-            print(f"Prompt {i+1}: {prompt}")
+    eval_dataset = shuffled_data.select(range(num_eval_samples))
+    train_dataset = shuffled_data.select(range(num_eval_samples, len(shuffled_data)))
+    
+    logger.info(f"Split the 'positive' data into: train={len(train_dataset)}, eval={len(eval_dataset)}")
             
-            response = generator(
-                prompt,
-                max_new_tokens=512,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                return_full_text=False,
-                pad_token_id=tokenizer.eos_token_id
-            )
-            
-            generated_text = response[0]['generated_text'].strip()
-            print(f"Generated Response:\n{generated_text}")
-            print("-" * 50)
+    return train_dataset, eval_dataset
 
-    except Exception as e:
-        logger.error(f"An error occurred during inference: {e}")
+def generate_rejected_responses(
+    dataset: Dataset,
+    model: Union[AutoModelForCausalLM | PeftModel],
+    tokenizer: AutoTokenizer,
+    config: DictConfig
+) -> Dataset:
+    """
+    Generates rejected responses using a pipeline and KeyDataset for efficient,
+    streaming batch processing.
+    """
+    logger.info("Generating rejected responses...")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run a sanity check on a fine-tuned DITTO model.")
-    parser.add_argument(
-        "model_path",
-        type=str,
-        help="Path to the directory where the trained model is saved."
+    generator = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        return_full_text=False,
+        device=config.model.device,
     )
     
-    args = parser.parse_args()
-    run_inference(args.model_path)
+    prompt_dataset = KeyDataset(dataset, "prompt")
+    generated_texts = []
+
+    with model.disable_adapter(), torch.inference_mode():
+        for response_list in tqdm(generator(prompt_dataset,
+                                            batch_size=config.dataset.get("batch_size", 8),
+                                            max_new_tokens=config.dataset.max_length // 2,
+                                            do_sample=False,
+                                            temperature=1.0,
+                                            top_p=1.0,
+                                            top_k=50,
+                                            eos_token_id=tokenizer.eos_token_id,
+                                            pad_token_id=tokenizer.pad_token_id,),
+                                total=len(dataset), desc="Generating rejected responses",
+                                leave=False):
+            
+            text = response_list[0]['generated_text']
+            if not text.endswith(tokenizer.eos_token):
+                text += tokenizer.eos_token
+            generated_texts.append(text)
+        
+    if "rejected" in dataset.column_names:
+        dataset = dataset.remove_columns("rejected")
+    updated_dataset = dataset.add_column("rejected", generated_texts)
+
+    logger.info(f"Generated {len(updated_dataset)} rejected responses")
+    return updated_dataset
+
+@hydra.main(version_base=None, config_path="../configs/ditto", config_name="sanity-check")
+def main(config: DictConfig):
+    load_dotenv()
+    OmegaConf.resolve(config)
+    seed_everything(config.seed)
+    
+    model_path = config.model.name_or_path
+    potential_local_path = os.path.join(get_original_cwd(), model_path)
+    
+    if os.path.isdir(potential_local_path):
+        logger.info(f"Loading model from local directory: {potential_local_path}")
+        model_load_path = potential_local_path
+    else:
+        logger.info(f"Loading model from Hugging Face Hub: {model_path}")
+        model_load_path = model_path
+
+    torch_dtype = torch.bfloat16 if config.model.use_bf16 else torch.float32
+    
+    model = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
+    logger.info("Model loaded successfully.")
+
+    lora_config_dict = OmegaConf.to_container(config.lora, resolve=True)
+    lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
+    model = get_peft_model(model, lora_config, adapter_name="ditto")
+    model.set_adapter("ditto")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_load_path, padding_side="left")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    logger.info("Tokenizer loaded successfully.")
+
+    full_dataset = load_dataset(config.dataset.name_or_path)
+    logger.info("Dataset loaded successfully.")
+
+    run = None
+    callbacks = []
+    if config.wandb.enabled:
+        run = wandb.init(
+            project=config.wandb.project,
+            config=OmegaConf.to_container(config, resolve=True),
+            name=config.wandb.name,
+            group=config.wandb.group,
+            tags=config.wandb.tags,
+            notes=config.wandb.notes,
+        )
+        wandb_callback = WandbCallback(wandb_run=run)
+        callbacks.append(wandb_callback)
+
+    train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset)
+    eval_dataset = generate_rejected_responses(eval_dataset, model, tokenizer, config)
+        
+    data_collator = DITTODataCollator(
+        tokenizer=tokenizer,
+        train_dataset=train_dataset,
+        max_length=config.dataset.max_length,
+        max_prompt_length=config.dataset.max_length // 2,
+        model=model,
+        **config.resample
+    )
+
+    eval_collator = DITTODataCollator(
+        tokenizer=tokenizer,
+        train_dataset=eval_dataset,
+        max_length=config.dataset.max_length,
+        max_prompt_length=config.dataset.max_length // 2,
+        model=model,
+        **config.resample,
+        mode="eval",
+    )
+
+    train_dataloader = DataLoader(
+        train_dataset, 
+        batch_size=config.dataset.batch_size, 
+        shuffle=True, 
+        collate_fn=data_collator, 
+        num_workers=config.dataset.num_workers
+    )
+    eval_dataloader = DataLoader(
+        eval_dataset, 
+        batch_size=config.dataset.batch_size, 
+        shuffle=False, 
+        collate_fn=eval_collator, 
+        num_workers=config.dataset.num_workers
+    )
+    
+    optimizer = AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
+    
+    callbacks.extend([
+        ResampleCallback(collator=data_collator, model=model, resample_rate=config.resample.get("resample_rate", 20)), 
+        LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
+    ])
+
+    trainer = DPOTrainer(
+        model=model,
+        adapter_name="ditto",
+        config=config.trainer,
+        tokenizer=tokenizer,
+        train_dataloader=train_dataloader,
+        eval_dataloader=eval_dataloader,
+        optimizer=optimizer,
+        device=config.model.get("device", "cpu"),
+        callbacks=callbacks,
+    )
+    
+    trainer.train()
+
+    logger.info(f"Start evaluating model {model.config.name_or_path}.")
+    trainer.evaluate()
+    logger.info("Evaluation complete.")
+
+    folder_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "model"
+    folder_path.mkdir(parents=True, exist_ok=True)
+    trainer.save(output_dir=folder_path)
+
+    huggingface_token = os.environ.get("HUGGINGFACE_API_KEY", None)
+    if config.trainer.push_to_hub and huggingface_token:
+        logger.info("Pushing model to hub.")
+        trainer.push_to_hub(folder_path=folder_path, commit_message=config.commit_message, token=huggingface_token)
+        logger.info("Successfully pushed the model.")
+    
+if __name__ == "__main__":
+    main()
+    

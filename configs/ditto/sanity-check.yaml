@@ -25,14 +25,12 @@ wandb:
   notes: "DITTO training on SmolLM2-135M-Instruct"
 
 dataset:
-  name_or_path: "belati/ccat50"
+  name_or_path: "belati/review-sentiment"
   batch_size: 2
   max_length: 512
   num_workers: 0
 
-  num_authors: 1
-  train_samples_per_author: 4
-  eval_samples_per_author: 4
+  num_eval_samples: 2
 
 optimizer:
   lr: 5.0e-6
