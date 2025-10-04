@@ -1,7 +1,6 @@
 commit_message: "Test"
 seed: 42
 
-enable_lora: true
 lora:
   r: 16
   lora_alpha: 32
@@ -13,6 +12,7 @@ lora:
     - o_proj
 
 model:
+  device: "cuda"
   name_or_path: "mistralai/Ministral-8B-Instruct-2410"
   use_bf16: true
 

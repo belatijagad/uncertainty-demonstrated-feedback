@@ -8,14 +8,14 @@ from collections import defaultdict
 import wandb
 import hydra
 from tqdm import tqdm
-from typing import Any
+from typing import Any, Union
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from peft import LoraConfig, get_peft_model, TaskType
+from peft import LoraConfig, PeftModel, get_peft_model, TaskType
 from datasets import DatasetDict, Dataset, load_dataset
 from transformers.pipelines import pipeline
 from transformers.pipelines.pt_utils import KeyDataset
@@ -82,7 +82,7 @@ def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Datas
 
 def generate_rejected_responses(
     dataset: Dataset,
-    ref_policy: AutoModelForCausalLM,
+    model: Union[AutoModelForCausalLM | PeftModel],
     tokenizer: AutoTokenizer,
     config: DictConfig
 ) -> Dataset:
@@ -94,32 +94,32 @@ def generate_rejected_responses(
 
     generator = pipeline(
         "text-generation",
-        model=ref_policy,
+        model=model,
         tokenizer=tokenizer,
         return_full_text=False,
-        # TODO: temporary fix, changing to "mps" will give `probability tensor contains either `inf`, `nan` or element < 0`
-        device="cuda",
+        device=config.model.device,
     )
     
     prompt_dataset = KeyDataset(dataset, "prompt")
     generated_texts = []
 
-    for response_list in tqdm(generator(prompt_dataset,
-                                        batch_size=config.dataset.get("batch_size", 8),
-                                        max_new_tokens=config.dataset.max_length // 2,
-                                        do_sample=False,
-                                        # Since sampling is not used, temperature and top_p is useless
-                                        # temperature=0.8,
-                                        # top_p=0.9,
-                                        eos_token_id=tokenizer.eos_token_id,
-                                        pad_token_id=tokenizer.pad_token_id,),
-                              total=len(dataset), desc="Generating rejected responses",
-                              leave=False):
-        
-        text = response_list[0]['generated_text']
-        if not text.endswith(tokenizer.eos_token):
-            text += tokenizer.eos_token
-        generated_texts.append(text)
+    with model.disable_adapter(), torch.inference_mode():
+        for response_list in tqdm(generator(prompt_dataset,
+                                            batch_size=config.dataset.get("batch_size", 8),
+                                            max_new_tokens=config.dataset.max_length // 2,
+                                            do_sample=False,
+                                            temperature=1.0,
+                                            top_p=1.0,
+                                            top_k=50,
+                                            eos_token_id=tokenizer.eos_token_id,
+                                            pad_token_id=tokenizer.pad_token_id,),
+                                total=len(dataset), desc="Generating rejected responses",
+                                leave=False):
+            
+            text = response_list[0]['generated_text']
+            if not text.endswith(tokenizer.eos_token):
+                text += tokenizer.eos_token
+            generated_texts.append(text)
         
     if "rejected" in dataset.column_names:
         dataset = dataset.remove_columns("rejected")
@@ -146,16 +146,13 @@ def main(config: DictConfig):
 
     torch_dtype = torch.bfloat16 if config.model.use_bf16 else torch.float32
     
-    policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
-    logger.info("Policy loaded successfully.")
-    if config.enable_lora:
-        lora_config_dict = OmegaConf.to_container(config.lora, resolve=True)
-        lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
-        policy = get_peft_model(policy, lora_config, adapter_name="ditto")
-        policy.set_adapter("ditto")
+    model = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
+    logger.info("Model loaded successfully.")
 
-    ref_policy = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
-    logger.info("Reference policy loaded successfully.")
+    lora_config_dict = OmegaConf.to_container(config.lora, resolve=True)
+    lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
+    model = get_peft_model(model, lora_config, adapter_name="ditto")
+    model.set_adapter("ditto")
 
     tokenizer = AutoTokenizer.from_pretrained(model_load_path, padding_side="left")
     if tokenizer.pad_token is None:
@@ -180,23 +177,23 @@ def main(config: DictConfig):
         callbacks.append(wandb_callback)
 
     train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset)
-    eval_dataset = generate_rejected_responses(eval_dataset, ref_policy, tokenizer, config)
+    eval_dataset = generate_rejected_responses(eval_dataset, model, tokenizer, config)
         
     data_collator = DITTODataCollator(
         tokenizer=tokenizer,
         train_dataset=train_dataset,
         max_length=config.dataset.max_length,
         max_prompt_length=config.dataset.max_length // 2,
-        model=policy,
+        model=model,
         **config.resample
     )
 
     eval_collator = DITTODataCollator(
         tokenizer=tokenizer,
-        train_dataset=train_dataset,
+        train_dataset=eval_dataset,
         max_length=config.dataset.max_length,
         max_prompt_length=config.dataset.max_length // 2,
-        model=policy,
+        model=model,
         **config.resample,
         mode="eval",
     )
@@ -209,34 +206,35 @@ def main(config: DictConfig):
         num_workers=config.dataset.num_workers
     )
     eval_dataloader = DataLoader(
-        train_dataset, 
+        eval_dataset, 
         batch_size=config.dataset.batch_size, 
         shuffle=False, 
         collate_fn=eval_collator, 
         num_workers=config.dataset.num_workers
     )
     
-    optimizer = AdamW(policy.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
+    optimizer = AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
     
     callbacks.extend([
-        ResampleCallback(collator=data_collator, model=policy, resample_rate=config.resample.get("resample_rate", 20)), 
+        ResampleCallback(collator=data_collator, model=model, resample_rate=config.resample.get("resample_rate", 20)), 
         LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
     ])
 
     trainer = DPOTrainer(
-        policy=policy,
-        ref_policy=ref_policy,
+        model=model,
+        adapter_name="ditto",
         config=config.trainer,
         tokenizer=tokenizer,
         train_dataloader=train_dataloader,
         eval_dataloader=eval_dataloader,
         optimizer=optimizer,
+        device=config.model.get("device", "cpu"),
         callbacks=callbacks,
     )
     
     trainer.train()
 
-    logger.info(f"Start evaluating model {policy.config.name_or_path}.")
+    logger.info(f"Start evaluating model {model.config.name_or_path}.")
     trainer.evaluate()
     logger.info("Evaluation complete.")
 

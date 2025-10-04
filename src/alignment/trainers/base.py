@@ -28,9 +28,9 @@ from collections import defaultdict
 import torch
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from transformers import PreTrainedTokenizer, PreTrainedModel, get_linear_schedule_with_warmup
+from transformers import PreTrainedTokenizer, get_linear_schedule_with_warmup
 from huggingface_hub import upload_folder
-from peft import PeftModel
+from peft import PeftModelForCausalLM
 
 from alignment.callbacks import TrainerCallback
 
@@ -92,22 +92,21 @@ class TrainerControl:
     ...
 
 class BaseTrainer(ABC):
-    def __init__(self, model: PreTrainedModel, config: DictConfig,
-                 tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer,
+    def __init__(self, model: PeftModelForCausalLM, config: DictConfig, adapter_name: str,
+                 tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer, device: str,
                  eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None):
         self.model = model
         self.config = config
+        self.adapter_name = adapter_name
         self.tokenizer = tokenizer
         self.train_dataloader = train_dataloader
         self.eval_dataloader = eval_dataloader
         self.optimizer = optimizer
         self.callbacks = callbacks if callbacks is not None else []
         
-        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        self.device = device
 
         self.model.to(self.device)
-
-        self.is_peft_model = isinstance(self.model, PeftModel)
         
         num_train_steps = self.config.epochs * len(self.train_dataloader)
         self.scheduler = get_linear_schedule_with_warmup(
@@ -117,13 +116,10 @@ class BaseTrainer(ABC):
         )
         self.global_step = 0
 
-        if self.is_peft_model:
-            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-            total_params = sum(p.numel() for p in self.model.parameters())
-            logger.info(f"LoRA model detected: {trainable_params:,} trainable / {total_params:,} total parameters "
-                        f"({trainable_params/total_params:.2%})")
-        else:
-            logger.info("Standard (non-LoRA) model detected")
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.model.parameters())
+        logger.info(f"LoRA model detected: {trainable_params:,} trainable / {total_params:,} total parameters "
+                    f"({trainable_params/total_params:.2%})")
 
         self.state = TrainerState()
         self.control = TrainerControl()
@@ -227,15 +223,13 @@ class BaseTrainer(ABC):
 
         with torch.inference_mode():
             eval_pbar = tqdm(self.eval_dataloader, desc="Evaluating", 
-                            bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}")
+                            bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}", leave=False)
             for batch in eval_pbar:
                 batch = {k: v.to(self.device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
                 _, metrics = self._get_batch_metrics(batch, "eval")
                 for key, value in metrics.items():
                     all_metrics[key].append(value)
-                
-                tqdm_metrics = {k: f"{v:.4f}" if isinstance(v, (int, float)) else str(v) 
-                            for k, v in metrics.items()}
+                tqdm_metrics = {k: f"{v:.4f}" if isinstance(v, (int, float)) else str(v) for k, v in metrics.items()}
                 eval_pbar.set_postfix(tqdm_metrics)
 
         final_metrics = {key: torch.tensor(values).mean().item() for key, values in all_metrics.items()}

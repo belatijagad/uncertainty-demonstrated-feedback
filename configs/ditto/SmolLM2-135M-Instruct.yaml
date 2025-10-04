@@ -1,7 +1,6 @@
 commit_message: "Initial commit"
 seed: 42
 
-enable_lora: true
 lora:
   r: 16
   lora_alpha: 32
@@ -13,11 +12,12 @@ lora:
     - o_proj
 
 model:
+  device: "mps"
   name_or_path: "HuggingFaceTB/SmolLM2-135M-Instruct"
   use_bf16: true
 
 wandb:
-  enabled: true
+  enabled: false
   project: "uncertainty-aware-alignment"
   name: "SmolLM2-135M-Instruct_ditto"
   group: "ditto"

@@ -1,6 +1,16 @@
 commit_message: "Initial commit"
 seed: 42
 
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+
 model:
   name_or_path: "google/gemma-3-270m-it"
   use_bf16: true

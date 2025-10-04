@@ -75,3 +75,4 @@ def generate_outputs(model: PreTrainedModel, tokenizer: PreTrainedTokenizer, dat
                 })
     
     return generated_outputs
+        

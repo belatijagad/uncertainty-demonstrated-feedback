@@ -24,7 +24,6 @@ import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from transformers.pipelines import pipeline
-from transformers.pipelines.pt_utils import KeyDataset
 from transformers import PreTrainedTokenizer, PreTrainedModel
 
 from alignment.callbacks import TrainerCallback
@@ -36,21 +35,17 @@ logger = logging.getLogger(__name__)
 
 class DPOTrainer(BaseTrainer):
     """A trainer for Direct Preference Optimization."""
-    def __init__(self, policy: PreTrainedModel, ref_policy: PreTrainedModel, config: DictConfig, 
-                 tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer,
+    def __init__(self, model: PreTrainedModel, adapter_name: str, config: DictConfig, 
+                 tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer, device: str,
                  eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None):
-        super().__init__(policy, config, tokenizer, train_dataloader, optimizer, eval_dataloader, callbacks)
-        
-        self.ref_policy = ref_policy
-        self.ref_policy.to(self.device)
-        self.ref_policy.eval()
-        
+        super().__init__(model, config, adapter_name, tokenizer, train_dataloader, optimizer, device, eval_dataloader, callbacks)
+                
     def _get_batch_metrics(self, batch: dict, train_eval: Literal["train", "eval"]) -> tuple[torch.Tensor, dict]:
         """Computes the DPO loss and metrics for a given batch."""
         policy_chosen_logps, policy_rejected_logps = self._concatenated_forward(self.model, batch)
         
-        with torch.inference_mode():
-            ref_chosen_logps, ref_rejected_logps = self._concatenated_forward(self.ref_policy, batch)
+        with self.model.disable_adapter(), torch.inference_mode():
+            ref_chosen_logps, ref_rejected_logps = self._concatenated_forward(self.model, batch)
 
         loss, chosen_rewards, rejected_rewards = self._dpo_loss(
             policy_chosen_logps, policy_rejected_logps, ref_chosen_logps, ref_rejected_logps
@@ -72,9 +67,8 @@ class DPOTrainer(BaseTrainer):
         return loss, metrics
         
     def _generate_samples(self) -> tuple[list[str], list[str]]:
-        """Generate samples from policy and reference models for wandb logging using KeyDataset."""        
+        """Generate samples from policy for wandb logging using KeyDataset."""        
         self.model.eval()
-        self.ref_policy.eval()
 
         eval_dataset = self.eval_dataloader.dataset
         prompts = [example["prompt"] for example in eval_dataset]
