@@ -81,6 +81,8 @@ class DITTODataCollator(BaseDPOCollator):
 
             logger.info(f"Resampling with vLLM using adapter: {self.lora_adapter_path}")
 
+            self.vllm_model.wake_up()
+
             sampling_params = SamplingParams(
                 n=self.bootstrap_count,
                 temperature=1.0,
@@ -106,7 +108,8 @@ class DITTODataCollator(BaseDPOCollator):
                 
                 generated_texts = [o.text + self.tokenizer.eos_token for o in output.outputs]
                 self.cache[step][prompt].extend(generated_texts)
-
+            
+            self.vllm_model.sleep(level=2)
         else:
             self.model.eval()
             generator = pipeline(

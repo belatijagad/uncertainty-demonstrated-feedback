@@ -1,5 +1,5 @@
 from pathlib import Path
-from ..trainers.base import TrainerCallback
+from alignment.callbacks import TrainerCallback
 from peft import PeftModel
 
 class LoraCallback(TrainerCallback):

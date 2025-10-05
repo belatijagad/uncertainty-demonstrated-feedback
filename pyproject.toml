@@ -3,13 +3,13 @@ name = "uncertainty-demonstrated-feedback"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = "==3.12"
+requires-python = ">=3.12"
 dependencies = [
     "datasets>=3.6.0",
     "hf-xet>=1.1.5",
     "hydra-core>=1.3.2",
     "pandas>=2.3.0",
-    "torch==2.8.0",
+    "torch==2.9.0",
     "transformers>=4.53.1",
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.15/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl ; sys_platform == 'linux' and python_version == '3.12'",
     "vllm>=0.11.0 ; sys_platform == 'linux'",
@@ -20,6 +20,7 @@ dependencies = [
     "wandb>=0.21.0",
     "peft>=0.17.0",
     "tiktoken>=0.9.0",
+    "hf-transfer",
 ]
 
 [tool.uv.sources]

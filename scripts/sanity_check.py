@@ -1,5 +1,6 @@
 import os
 import logging
+import multiprocessing
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -22,7 +23,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from vllm import LLM
 
 from alignment.trainers import DITTOTrainer
-from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback
+from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback, LoraCallback
 from alignment.collators import DITTODataCollator
 from alignment.utils import seed_everything
 
@@ -144,7 +145,7 @@ def main(config: DictConfig):
         * vllm_config.get("bootstrap_count"),
         max_model_len=config.get("max_length"),
         seed=42,
-        num_batched_tokens=4096,
+        # num_batched_tokens=4096,
         enable_sleep_mode=vllm_config.get("enable_sleep_mode"),
         logprobs_mode="processed_logprobs",
         enable_lora=True,
@@ -219,7 +220,8 @@ def main(config: DictConfig):
     
     callbacks.extend([
         ResampleCallback(collator=data_collator, model=model, resample_rate=config.get("resample_rate", 20)), 
-        LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
+        LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500)),
+        LoraCallback(model=model),
     ])
 
     trainer = DITTOTrainer(
@@ -254,5 +256,6 @@ def main(config: DictConfig):
         logger.info("Successfully pushed the model.")
     
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn", force=True)
     main()
     
