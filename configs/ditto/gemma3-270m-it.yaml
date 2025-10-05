@@ -51,6 +51,7 @@ trainer:
   gradient_accumulation_steps: 8
   max_length: 512
 
+resample_rate: 20
 resample:
   frac_expert: 0.7
   frac_replay: 0.2

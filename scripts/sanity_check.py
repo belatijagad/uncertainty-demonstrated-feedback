@@ -120,7 +120,11 @@ def main(config: DictConfig):
 
     torch_dtype = torch.bfloat16 if config.model.use_bf16 else torch.float32
     
-    model = AutoModelForCausalLM.from_pretrained(model_load_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_load_path, 
+        low_cpu_mem_usage=True, 
+        dtype=torch_dtype, 
+        attn_implementation=config.model.get("attn_implementation", "sdpa"))
     logger.info("Model loaded successfully.")
 
     lora_config_dict = OmegaConf.to_container(config.lora, resolve=True)
@@ -190,7 +194,7 @@ def main(config: DictConfig):
     optimizer = AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
     
     callbacks.extend([
-        ResampleCallback(collator=data_collator, model=model, resample_rate=config.resample.get("resample_rate", 20)), 
+        ResampleCallback(collator=data_collator, model=model, resample_rate=config.get("resample_rate", 20)), 
         LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
     ])
 
@@ -211,6 +215,8 @@ def main(config: DictConfig):
     logger.info(f"Start evaluating model {model.config.name_or_path}.")
     trainer.evaluate()
     logger.info("Evaluation complete.")
+
+    wandb.finish()
 
     folder_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "model"
     folder_path.mkdir(parents=True, exist_ok=True)

@@ -90,7 +90,7 @@ class DPOTrainer(BaseTrainer):
         )
         all_policy_samples = []
         with torch.inference_mode():
-            for prompt in tqdm(prompts, desc="Generating policy samples"):
+            for prompt in tqdm(prompts, desc="Generating policy samples", leave=False):
                 policy_out = policy_generator(prompt, **gen_kwargs)
                 all_policy_samples.append(policy_out[0]["generated_text"])
                         

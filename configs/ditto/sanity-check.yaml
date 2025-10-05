@@ -13,6 +13,7 @@ lora:
 
 model:
   device: "mps"
+  attn_implementation: "sdpa" # "flash_attention_3" if cuda
   name_or_path: "HuggingFaceTB/SmolLM2-135M-Instruct"
   use_bf16: true
 

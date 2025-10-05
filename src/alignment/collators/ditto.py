@@ -85,6 +85,7 @@ class DITTODataCollator(BaseDPOCollator):
                 responses = generator(
                     prompt,
                     max_new_tokens=self.max_length - self.max_prompt_length,
+                    max_length=self.max_length,
                     do_sample=True,
                     num_return_sequences=self.bootstrap_count,
                     pad_token_id=self.tokenizer.eos_token_id,
