@@ -19,8 +19,9 @@ from datasets import DatasetDict, Dataset, load_dataset
 from transformers.pipelines import pipeline
 from transformers.pipelines.pt_utils import KeyDataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from vllm import LLM
 
-from alignment.trainers import DPOTrainer
+from alignment.trainers import DITTOTrainer
 from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback
 from alignment.collators import DITTODataCollator
 from alignment.utils import seed_everything
@@ -131,6 +132,25 @@ def main(config: DictConfig):
     lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ditto")
     model.set_adapter("ditto")
+    lora_adapter_path = "../src/alignment/temp"
+
+    vllm_config = config.trainer.get("vllm")
+    llm = LLM(
+        model=model.name_or_path,
+        tensor_parallel_size=1,
+        gpu_memory_utilization=vllm_config.get("gpu_mem_util"),
+        max_num_seqs=vllm_config.get("batch_size")
+        * vllm_config.get("rescale_batch")
+        * vllm_config.get("bootstrap_count"),
+        max_model_len=config.get("max_length"),
+        seed=42,
+        num_batched_tokens=4096,
+        enable_sleep_mode=vllm_config.get("enable_sleep_mode"),
+        logprobs_mode="processed_logprobs",
+        enable_lora=True,
+    )
+    if vllm_config.get("enable_sleep_mode"):
+        llm.sleep(level=1)
 
     tokenizer = AutoTokenizer.from_pretrained(model_load_path, padding_side="left")
     if tokenizer.pad_token is None:
@@ -163,6 +183,8 @@ def main(config: DictConfig):
         max_length=config.dataset.max_length,
         max_prompt_length=config.dataset.max_length // 2,
         model=model,
+        vllm_model=llm,
+        lora_adapter_path=lora_adapter_path,
         **config.resample
     )
 
@@ -172,6 +194,8 @@ def main(config: DictConfig):
         max_length=config.dataset.max_length,
         max_prompt_length=config.dataset.max_length // 2,
         model=model,
+        vllm_model=llm,
+        lora_adapter_path=lora_adapter_path,
         **config.resample,
         mode="eval",
     )
@@ -198,8 +222,9 @@ def main(config: DictConfig):
         LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
     ])
 
-    trainer = DPOTrainer(
+    trainer = DITTOTrainer(
         model=model,
+        vllm_model=llm,
         adapter_name="ditto",
         config=config.trainer,
         tokenizer=tokenizer,

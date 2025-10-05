@@ -50,6 +50,12 @@ trainer:
   repo_id: "belati/SmolLM2-135M-Instruct_ditto"
   gradient_accumulation_steps: 1
   max_length: 512
+  vllm:
+    gpu_mem_util: 0.4
+    enable_sleep_mode: true
+    batch_size: 2
+    rescale_batch: 2
+    bootstrap_count: 2
 
 resample_rate: 20
 resample:

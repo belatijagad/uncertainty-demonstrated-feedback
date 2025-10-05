@@ -16,12 +16,14 @@
 import random
 import logging
 from tqdm import tqdm
-from typing import Any
+from typing import Any, Optional
 from dataclasses import dataclass, field
 
 import torch
 from torch.utils.data import Dataset
 from transformers import PreTrainedModel, pipeline
+from vllm import LLM, SamplingParams
+from vllm.lora.request import LoRARequest
 
 from alignment.collators import BaseDPOCollator
 
@@ -45,6 +47,9 @@ class DITTODataCollator(BaseDPOCollator):
     rescale_batch: int = 1
     bootstrap_count: int = 10
     
+    vllm_model: Optional[LLM] = field(default=None)
+    lora_adapter_path: Optional[str] = field(default=None)
+    
     cache: dict[int, dict[str, list[str]]] = field(default_factory=dict, init=False, repr=False)
     last_sampled_step: int = field(default=0, init=False)
 
@@ -66,37 +71,68 @@ class DITTODataCollator(BaseDPOCollator):
             logger.warning("Empty dataset provided for DITTO resampling")
             return
 
-        generator = pipeline(
-            "text-generation",
-            model=self.model,
-            tokenizer=self.tokenizer,
-            return_full_text=False,
-        )
-
         prompts = sorted(set(self.train_dataset["prompt"]))
 
         self.model.eval()
-        
-        with torch.inference_mode():
-            for prompt in tqdm(prompts, desc="Generating Samples", leave=False):
+
+        if self.vllm_model is not None:
+            if not self.lora_adapter_path:
+                raise ValueError("lora_adapter_path must be set when using vllm_model.")
+
+            logger.info(f"Resampling with vLLM using adapter: {self.lora_adapter_path}")
+
+            sampling_params = SamplingParams(
+                n=self.bootstrap_count,
+                temperature=1.0,
+                max_tokens=self.max_length - self.max_prompt_length,
+            )
+            
+            lora_request = LoRARequest(
+                lora_name="ditto",
+                lora_int_id=1,
+                lora_local_path=self.lora_adapter_path
+            )
+
+            outputs = self.vllm_model.generate(
+                prompts,
+                sampling_params,
+                lora_request=lora_request
+            )
+
+            for output in tqdm(outputs, desc="Processing vLLM Samples", leave=False):
+                prompt = output.prompt
                 if prompt not in self.cache[step]:
                     self.cache[step][prompt] = []
                 
-                responses = generator(
-                    prompt,
-                    max_new_tokens=self.max_length - self.max_prompt_length,
-                    max_length=self.max_length,
-                    do_sample=True,
-                    num_return_sequences=self.bootstrap_count,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    truncation=True,
-                )
-                
-                for response in responses:
-                    generated_text = response['generated_text']
-                    self.cache[step][prompt].append(generated_text + self.tokenizer.eos_token)
-        
-        self.model.train()
+                generated_texts = [o.text + self.tokenizer.eos_token for o in output.outputs]
+                self.cache[step][prompt].extend(generated_texts)
+
+        else:
+            self.model.eval()
+            generator = pipeline(
+                "text-generation",
+                model=self.model,
+                tokenizer=self.tokenizer,
+                return_full_text=False,
+            )
+            
+            with torch.inference_mode():
+                for prompt in tqdm(prompts, desc="Generating Samples", leave=False):
+                    if prompt not in self.cache[step]:
+                        self.cache[step][prompt] = []
+                    
+                    responses = generator(
+                        prompt,
+                        max_new_tokens=self.max_length - self.max_prompt_length,
+                        do_sample=True,
+                        num_return_sequences=self.bootstrap_count,
+                        pad_token_id=self.tokenizer.eos_token_id,
+                    )
+                    
+                    for response in responses:
+                        generated_text = response['generated_text']
+                        self.cache[step][prompt].append(generated_text + self.tokenizer.eos_token)
+            self.model.train()
 
     def _get_noisy_pairs(self, prompt: str, step_a: int) -> list[tuple]:
         """

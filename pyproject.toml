@@ -12,7 +12,7 @@ dependencies = [
     "torch==2.8.0",
     "transformers>=4.53.1",
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.15/flash_attn-2.8.3+cu128torch2.9-cp312-cp312-linux_x86_64.whl ; sys_platform == 'linux' and python_version == '3.12'",
-    "vllm>=0.9.2 ; sys_platform == 'linux'",
+    "vllm>=0.11.0 ; sys_platform == 'linux'",
     "mypy>=1.17.0",
     "google-genai>=1.28.0",
     "huggingface-hub>=0.33.4",
