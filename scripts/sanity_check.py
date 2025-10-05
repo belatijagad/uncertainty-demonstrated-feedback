@@ -13,6 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from huggingface_hub import login
 from peft import LoraConfig, PeftModel, get_peft_model, TaskType
 from datasets import DatasetDict, Dataset, load_dataset
 from transformers.pipelines import pipeline
@@ -103,6 +104,7 @@ def generate_rejected_responses(
 @hydra.main(version_base=None, config_path="../configs/ditto", config_name="sanity-check")
 def main(config: DictConfig):
     load_dotenv()
+    login(token=os.environ.get("HUGGINGFACE_API_KEY"))
     OmegaConf.resolve(config)
     seed_everything(config.seed)
     
