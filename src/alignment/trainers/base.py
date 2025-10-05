@@ -19,7 +19,7 @@ import logging
 import dataclasses
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import Optional, Literal
+from typing import Optional, Literal, Any
 
 from tqdm import tqdm
 from omegaconf import DictConfig
@@ -127,8 +127,6 @@ class BaseTrainer(ABC):
     def train(self) -> None:
         """Main training loop."""
         num_train_steps = self.config.epochs * len(self.train_dataloader)
-        # pbar = tqdm(total=num_train_steps, desc="Training", 
-        #             bar_format="{l_bar}{bar:30}{r_bar}{bar:-30b}")
         data_iterator = iter(self.train_dataloader)
         
         grad_acc_steps = self.config.get("gradient_accumulation_steps", 1)
@@ -160,13 +158,7 @@ class BaseTrainer(ABC):
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
-                self.global_step += 1
-
-                # pbar.update(grad_acc_steps)
-                # tqdm_metrics = {k: f"{v:.4f}" if isinstance(v, (int, float)) else str(v) 
-                #             for k, v in metrics.items()}
-                # pbar.set_postfix(tqdm_metrics)
-                
+                self.global_step += 1                
                 self.state.global_step = self.global_step
                 self.state.last_metrics = metrics
                 
@@ -174,25 +166,23 @@ class BaseTrainer(ABC):
                 cb.on_step_end(args=None, state=self.state, control=self.control)
 
             if (i + 1) % self.config.eval_steps == 0 and self.eval_dataloader is not None:
+                for cb in self.callbacks:
+                    cb.on_eval_start(
+                        args=None,
+                        state=self.state,
+                        control=self.control,
+                    )
+
                 eval_metrics = self.evaluate()
+                eval_artifacts = self._prepare_eval_artifacts(eval_metrics)
 
-                # TODO: This code is DPO-specific, won't work for SFT and stuffs.
-                #       Need to move this part to DPO code somehow without rewriting the whole training loop.
-                policy_samples, ref_samples = None, None
-                sample_prompts = None
-
-                if self.config.sample_during_eval:
-                    sample_prompts, policy_samples = self._generate_samples()
-                    
                 for cb in self.callbacks:
                     cb.on_eval_end(
-                        args=None, 
-                        state=self.state, 
+                        args=None,
+                        state=self.state,
                         control=self.control,
                         eval_metrics=eval_metrics,
-                        policy_samples=policy_samples,
-                        ref_samples=ref_samples,
-                        sample_prompts=sample_prompts
+                        **eval_artifacts,
                     )
 
             if (i + 1) % self.config.save_steps == 0:
@@ -207,7 +197,7 @@ class BaseTrainer(ABC):
         
         for cb in self.callbacks: 
             cb.on_train_end(args=None, state=self.state, control=self.control)
-        # pbar.close()
+
         logger.info("Training complete.")
 
     def evaluate(self) -> dict[str, torch.Tensor]:
@@ -263,6 +253,10 @@ class BaseTrainer(ABC):
     @abstractmethod
     def _generate_samples(self) -> tuple[list[str], list[str]]:
         pass
+
+    def _prepare_eval_artifacts(self, eval_metrics: dict[str, float]) -> dict[str, Any]:
+        """Hook for subclasses to provide extra data to eval callbacks."""
+        return {}
         
     @staticmethod
     def _get_batch_logps(logits: torch.FloatTensor, labels: torch.LongTensor, label_pad_token_id: int = -100) -> torch.FloatTensor:

@@ -24,12 +24,12 @@ class WandbCallback(TrainerCallback):
             return
             
         eval_metrics = kwargs.get('eval_metrics', {})
-        policy_samples = kwargs.get('policy_samples')
-        
+        policy_samples = kwargs.get('policy_samples') or []
+
         wandb_log_data = {**eval_metrics}
-        
-        if policy_samples is not None:
-            sample_prompts = kwargs.get('sample_prompts', [])
+
+        if policy_samples:
+            sample_prompts = kwargs.get('sample_prompts') or []
             policy_table = wandb.Table(columns=["step", "prompt", "sample"])
             min_len = min(len(sample_prompts), len(policy_samples))
 

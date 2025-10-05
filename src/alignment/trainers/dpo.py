@@ -14,16 +14,14 @@
 # limitations under the License.
 
 import logging
-from typing import Optional, Literal
+from typing import Optional, Literal, Any
 
-from tqdm import tqdm
 from omegaconf import DictConfig
 
 import torch
 import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from transformers.pipelines import pipeline
 from transformers import PreTrainedTokenizer, PreTrainedModel
 
 from alignment.callbacks import TrainerCallback
@@ -66,37 +64,18 @@ class DPOTrainer(BaseTrainer):
             
         return loss, metrics
         
-    def _generate_samples(self) -> tuple[list[str], list[str]]:
-        """Generate samples from policy for wandb logging using KeyDataset."""        
-        self.model.eval()
+    def _generate_samples(self):
+        return super()._generate_samples()
 
-        eval_dataset = self.eval_dataloader.dataset
-        prompts = [example["prompt"] for example in eval_dataset]
+    def _prepare_eval_artifacts(self, eval_metrics: dict[str, float]) -> dict[str, Any]:
+        artifacts = dict(super()._prepare_eval_artifacts(eval_metrics) or {})
 
-        max_prompt_len = self.config.get("max_prompt_length", self.config.max_length // 2)
-        gen_kwargs = {
-            "max_new_tokens": self.config.max_length - max_prompt_len,
-            "do_sample": True,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "truncation": True,
-        }
+        if self.config.get("sample_during_eval", False):
+            sample_prompts, policy_samples = self._generate_samples()
+            artifacts["sample_prompts"] = sample_prompts
+            artifacts["policy_samples"] = policy_samples
 
-        policy_generator = pipeline(
-            "text-generation",
-            model=self.model,
-            tokenizer=self.tokenizer,
-            return_full_text=False,
-            device=self.device
-        )
-        all_policy_samples = []
-        with torch.inference_mode():
-            for prompt in tqdm(prompts, desc="Generating policy samples", leave=False):
-                policy_out = policy_generator(prompt, **gen_kwargs)
-                all_policy_samples.append(policy_out[0]["generated_text"])
-                        
-        self.model.train()
-                
-        return prompts, all_policy_samples
+        return artifacts
 
     def _concatenated_forward(self, model: PreTrainedModel, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Performs a forward pass on a concatenated batch of chosen and rejected examples."""
