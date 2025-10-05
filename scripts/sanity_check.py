@@ -12,6 +12,7 @@ from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 
 import torch
+import torch.distributed as dist
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from huggingface_hub import login
@@ -133,127 +134,134 @@ def main(config: DictConfig):
     lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ditto")
     model.set_adapter("ditto")
-    lora_adapter_path = "../src/alignment/temp"
+    lora_adapter_path = Path(__file__).parent / "src/alignment/temp"
+    lora_adapter_path.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(str(lora_adapter_path))
 
-    vllm_config = config.trainer.get("vllm")
-    llm = LLM(
-        model=model.name_or_path,
-        tensor_parallel_size=1,
-        gpu_memory_utilization=vllm_config.get("gpu_mem_util"),
-        max_num_seqs=vllm_config.get("batch_size")
-        * vllm_config.get("rescale_batch")
-        * vllm_config.get("bootstrap_count"),
-        max_model_len=config.get("max_length"),
-        seed=42,
-        # num_batched_tokens=4096,
-        enable_sleep_mode=vllm_config.get("enable_sleep_mode"),
-        logprobs_mode="processed_logprobs",
-        enable_lora=True,
-    )
-    if vllm_config.get("enable_sleep_mode"):
-        llm.sleep(level=1)
-
-    tokenizer = AutoTokenizer.from_pretrained(model_load_path, padding_side="left")
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    logger.info("Tokenizer loaded successfully.")
-
-    full_dataset = load_dataset(config.dataset.name_or_path)
-    logger.info("Dataset loaded successfully.")
-
-    run = None
-    callbacks = []
-    if config.wandb.enabled:
-        run = wandb.init(
-            project=config.wandb.project,
-            config=OmegaConf.to_container(config, resolve=True),
-            name=config.wandb.name,
-            group=config.wandb.group,
-            tags=config.wandb.tags,
-            notes=config.wandb.notes,
+    try:
+        vllm_config = config.trainer.get("vllm")
+        llm = LLM(
+            model=model.name_or_path,
+            tensor_parallel_size=1,
+            gpu_memory_utilization=vllm_config.get("gpu_mem_util"),
+            max_num_seqs=vllm_config.get("batch_size")
+            * vllm_config.get("rescale_batch")
+            * vllm_config.get("bootstrap_count"),
+            max_model_len=config.get("max_length"),
+            seed=42,
+            # num_batched_tokens=4096,
+            enable_sleep_mode=vllm_config.get("enable_sleep_mode"),
+            logprobs_mode="processed_logprobs",
+            enable_lora=True,
         )
-        wandb_callback = WandbCallback(wandb_run=run)
-        callbacks.append(wandb_callback)
+        if vllm_config.get("enable_sleep_mode"):
+            llm.sleep(level=1)
 
-    train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset)
-    eval_dataset = generate_rejected_responses(eval_dataset, model, tokenizer, config)
+        tokenizer = AutoTokenizer.from_pretrained(model_load_path, padding_side="left")
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        logger.info("Tokenizer loaded successfully.")
+
+        full_dataset = load_dataset(config.dataset.name_or_path)
+        logger.info("Dataset loaded successfully.")
+
+        run = None
+        callbacks = []
+        if config.wandb.enabled:
+            run = wandb.init(
+                project=config.wandb.project,
+                config=OmegaConf.to_container(config, resolve=True),
+                name=config.wandb.name,
+                group=config.wandb.group,
+                tags=config.wandb.tags,
+                notes=config.wandb.notes,
+            )
+            wandb_callback = WandbCallback(wandb_run=run)
+            callbacks.append(wandb_callback)
+
+        train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset)
+        eval_dataset = generate_rejected_responses(eval_dataset, model, tokenizer, config)
+            
+        data_collator = DITTODataCollator(
+            tokenizer=tokenizer,
+            train_dataset=train_dataset,
+            max_length=config.dataset.max_length,
+            max_prompt_length=config.dataset.max_length // 2,
+            model=model,
+            vllm_model=llm,
+            lora_adapter_path=lora_adapter_path,
+            **config.resample
+        )
+
+        eval_collator = DITTODataCollator(
+            tokenizer=tokenizer,
+            train_dataset=eval_dataset,
+            max_length=config.dataset.max_length,
+            max_prompt_length=config.dataset.max_length // 2,
+            model=model,
+            vllm_model=llm,
+            lora_adapter_path=lora_adapter_path,
+            **config.resample,
+            mode="eval",
+        )
+
+        train_dataloader = DataLoader(
+            train_dataset, 
+            batch_size=config.dataset.batch_size, 
+            shuffle=True, 
+            collate_fn=data_collator, 
+            num_workers=config.dataset.num_workers
+        )
+        eval_dataloader = DataLoader(
+            eval_dataset, 
+            batch_size=config.dataset.batch_size, 
+            shuffle=False, 
+            collate_fn=eval_collator, 
+            num_workers=config.dataset.num_workers
+        )
         
-    data_collator = DITTODataCollator(
-        tokenizer=tokenizer,
-        train_dataset=train_dataset,
-        max_length=config.dataset.max_length,
-        max_prompt_length=config.dataset.max_length // 2,
-        model=model,
-        vllm_model=llm,
-        lora_adapter_path=lora_adapter_path,
-        **config.resample
-    )
+        optimizer = AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
+        
+        callbacks.extend([
+            ResampleCallback(collator=data_collator, model=model, resample_rate=config.get("resample_rate", 20)), 
+            LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500)),
+            LoraCallback(model=model),
+        ])
 
-    eval_collator = DITTODataCollator(
-        tokenizer=tokenizer,
-        train_dataset=eval_dataset,
-        max_length=config.dataset.max_length,
-        max_prompt_length=config.dataset.max_length // 2,
-        model=model,
-        vllm_model=llm,
-        lora_adapter_path=lora_adapter_path,
-        **config.resample,
-        mode="eval",
-    )
+        trainer = DITTOTrainer(
+            model=model,
+            vllm_model=llm,
+            adapter_name="ditto",
+            config=config.trainer,
+            tokenizer=tokenizer,
+            train_dataloader=train_dataloader,
+            eval_dataloader=eval_dataloader,
+            optimizer=optimizer,
+            device=config.model.get("device", "cpu"),
+            callbacks=callbacks,
+        )
+        
+        trainer.train()
 
-    train_dataloader = DataLoader(
-        train_dataset, 
-        batch_size=config.dataset.batch_size, 
-        shuffle=True, 
-        collate_fn=data_collator, 
-        num_workers=config.dataset.num_workers
-    )
-    eval_dataloader = DataLoader(
-        eval_dataset, 
-        batch_size=config.dataset.batch_size, 
-        shuffle=False, 
-        collate_fn=eval_collator, 
-        num_workers=config.dataset.num_workers
-    )
-    
-    optimizer = AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.weight_decay)
-    
-    callbacks.extend([
-        ResampleCallback(collator=data_collator, model=model, resample_rate=config.get("resample_rate", 20)), 
-        LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500)),
-        LoraCallback(model=model),
-    ])
+        logger.info(f"Start evaluating model {model.config.name_or_path}.")
+        trainer.evaluate()
+        logger.info("Evaluation complete.")
 
-    trainer = DITTOTrainer(
-        model=model,
-        vllm_model=llm,
-        adapter_name="ditto",
-        config=config.trainer,
-        tokenizer=tokenizer,
-        train_dataloader=train_dataloader,
-        eval_dataloader=eval_dataloader,
-        optimizer=optimizer,
-        device=config.model.get("device", "cpu"),
-        callbacks=callbacks,
-    )
-    
-    trainer.train()
+        wandb.finish()
 
-    logger.info(f"Start evaluating model {model.config.name_or_path}.")
-    trainer.evaluate()
-    logger.info("Evaluation complete.")
+        folder_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "model"
+        folder_path.mkdir(parents=True, exist_ok=True)
+        trainer.save(output_dir=folder_path)
 
-    wandb.finish()
-
-    folder_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "model"
-    folder_path.mkdir(parents=True, exist_ok=True)
-    trainer.save(output_dir=folder_path)
-
-    huggingface_token = os.environ.get("HUGGINGFACE_API_KEY", None)
-    if config.trainer.push_to_hub and huggingface_token:
-        logger.info("Pushing model to hub.")
-        trainer.push_to_hub(folder_path=folder_path, commit_message=config.commit_message, token=huggingface_token)
-        logger.info("Successfully pushed the model.")
+        huggingface_token = os.environ.get("HUGGINGFACE_API_KEY", None)
+        if config.trainer.push_to_hub and huggingface_token:
+            logger.info("Pushing model to hub.")
+            trainer.push_to_hub(folder_path=folder_path, commit_message=config.commit_message, token=huggingface_token)
+            logger.info("Successfully pushed the model.")
+    finally:
+        if dist.is_initialized():
+            logger.info("Destroying process group...")
+            dist.destroy_process_group()
     
 if __name__ == "__main__":
     multiprocessing.set_start_method("spawn", force=True)
