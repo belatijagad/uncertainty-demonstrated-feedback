@@ -24,7 +24,7 @@ class DITTOTrainer(DPOTrainer):
     def __init__(self, model: PreTrainedModel, adapter_name: str, config: DictConfig, 
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer, device: str,
                  eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None, vllm_model: LLM = None):
-        super().__init__(model, config, adapter_name, tokenizer, train_dataloader, optimizer, device, eval_dataloader, callbacks)
+        super().__init__(model, adapter_name, config, tokenizer, train_dataloader, optimizer, device, eval_dataloader, callbacks)
         self.llm = vllm_model
 
     def _generate_samples(self) -> tuple[list[str], list[str]]:

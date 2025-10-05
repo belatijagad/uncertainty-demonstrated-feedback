@@ -79,7 +79,7 @@ class DITTODataCollator(BaseDPOCollator):
             if not self.lora_adapter_path:
                 raise ValueError("lora_adapter_path must be set when using vllm_model.")
 
-            logger.info(f"Resampling with vLLM using adapter: {self.lora_adapter_path}")
+            logger.info(f"Resampling with vLLM using adapter: {self.lora_adapter_path / "ditto"}")
 
             self.vllm_model.wake_up()
 
@@ -92,7 +92,7 @@ class DITTODataCollator(BaseDPOCollator):
             lora_request = LoRARequest(
                 lora_name="ditto",
                 lora_int_id=1,
-                lora_local_path=self.lora_adapter_path
+                lora_local_path=str(self.lora_adapter_path / "ditto"),
             )
 
             outputs = self.vllm_model.generate(
