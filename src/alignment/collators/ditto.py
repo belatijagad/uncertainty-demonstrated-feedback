@@ -78,7 +78,7 @@ class DITTODataCollator(BaseDPOCollator):
 
         lora_request = (
             None if self.lora_adapter_path is None or not VLLM_AVAILABLE
-            else LoRARequest("ditto", 1, self.lora_adapter_path)
+            else LoRARequest("ditto", 1, str(self.lora_adapter_path))
             )
 
         responses = batched_generate(
@@ -86,7 +86,7 @@ class DITTODataCollator(BaseDPOCollator):
             max_new_tokens=self.max_length - self.max_prompt_length,
             model=self.model,
             tokenizer=self.tokenizer,
-            device=self.model.device,
+            device=None if isinstance(self.model, LLM) else self.model.device,
             lora_request=lora_request,
             num_return_sequences=self.bootstrap_count,
             do_sample=True,

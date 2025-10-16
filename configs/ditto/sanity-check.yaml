@@ -30,11 +30,11 @@ wandb:
 
 dataset:
   name_or_path: "belati/review-sentiment"
-  batch_size: 4
+  batch_size: 2
   max_length: 512
   num_workers: 0
 
-  num_eval_samples: 2
+  num_eval_samples: 4
 
 optimizer:
   lr: 5.0e-5 # x10 learning rate for LoRA, default was 5e-6
@@ -48,12 +48,12 @@ trainer:
   max_grad_norm: 1.0
   logging_steps: 10
   save_steps: 500
-  eval_steps: 20
+  eval_steps: 50
   push_to_hub: false
   repo_id: "belati/Ministral-8B-Instruct-2410_ditto"
   gradient_accumulation_steps: 1
   max_length: 512
-  use_vllm: true
+  use_vllm: false
   vllm:
     gpu_mem_util: 0.4
     enable_sleep_mode: true
@@ -61,7 +61,7 @@ trainer:
     rescale_batch: 2
     bootstrap_count: 2
 
-resample_rate: 25
+resample_rate: 50
 resample:
   frac_expert: 0.7
   frac_replay: 0.2

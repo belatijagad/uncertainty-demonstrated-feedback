@@ -124,7 +124,7 @@ def main(config: DictConfig):
     lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ditto")
     model.set_adapter("ditto")
-    lora_adapter_path = Path(__file__).parent.parent / "src/alignment/temp"
+    lora_adapter_path = Path(__file__).parent.parent / "src/alignment/temp/ditto"
     lora_adapter_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(lora_adapter_path))
 

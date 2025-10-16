@@ -216,6 +216,9 @@ class BaseTrainer(ABC):
                 eval_pbar.set_postfix(tqdm_metrics)
 
         final_metrics = {key: torch.tensor(values).mean().item() for key, values in all_metrics.items()}
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         self.model.train()
         return final_metrics

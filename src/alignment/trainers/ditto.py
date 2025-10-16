@@ -37,10 +37,12 @@ class DITTOTrainer(DPOTrainer):
         
         max_prompt_len = self.config.get("max_prompt_length", self.config.max_length // 2)
 
-        lora_request = (
-            None if self.lora_adapter_path is None or not VLLM_AVAILABLE
-            else LoRARequest("ditto", 1, str(Path("../temp/ditto").resolve()))
-            )
+        lora_request = None
+        if self.llm is not None:
+            lora_path = Path("../temp/ditto")
+            self.model.save_pretrained(lora_path, adapter_name="ditto")
+            lora_request = LoRARequest("ditto", 1, str(lora_path.resolve()))
+
         generations = batched_generate(
             prompts,
             max_new_tokens=self.config.max_length - max_prompt_len,
