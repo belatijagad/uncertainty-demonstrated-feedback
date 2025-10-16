@@ -6,20 +6,17 @@ lora:
   lora_alpha: 32
   lora_dropout: 0.05
   target_modules:
-    - q_proj
-    - k_proj
-    - v_proj
-    - o_proj
+    - all-linear
 
 model:
   device: "cuda"
-  attn_implementation: "flash_attention_2" # "flash_attention_3" if cuda
+  attn_implementation: "flash_attention_2" # "flash_attention_2" if cuda
   name_or_path: "mistralai/Ministral-8B-Instruct-2410"
   use_bf16: true
 
 wandb:
   enabled: true
-  project: "uncertainty-aware-alignment"
+  project: "ditto"
   name: "ministral8binstruct_ditto"
   group: "ditto"
   tags: ["ministral", "8b"]
@@ -34,7 +31,7 @@ dataset:
   num_eval_samples: 2
 
 optimizer:
-  lr: 5.0e-6
+  lr: 5.0e-5 # x10 learning rate for LoRA, default was 5e-6
   weight_decay: 0.01
 
 trainer:
@@ -50,6 +47,7 @@ trainer:
   repo_id: "belati/Ministral-8B-Instruct-2410_ditto"
   gradient_accumulation_steps: 1
   max_length: 512
+  use_vllm: true
   vllm:
     gpu_mem_util: 0.4
     enable_sleep_mode: true
