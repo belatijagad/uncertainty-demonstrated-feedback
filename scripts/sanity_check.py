@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 
 import wandb
 import hydra
-from tqdm import tqdm
 from typing import Any, Union
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
@@ -18,15 +17,18 @@ from torch.utils.data import DataLoader
 from huggingface_hub import login
 from peft import LoraConfig, PeftModel, get_peft_model, TaskType
 from datasets import DatasetDict, Dataset, load_dataset
-from transformers.pipelines import pipeline
-from transformers.pipelines.pt_utils import KeyDataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from vllm import LLM
+
+try:
+    from vllm import LLM
+    VLLM_AVAILABLE = True
+except ImportError:
+    VLLM_AVAILABLE = False
 
 from alignment.trainers import DITTOTrainer
 from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback, LoraCallback
 from alignment.collators import DITTODataCollator
-from alignment.utils import seed_everything
+from alignment.utils import seed_everything, batched_generate
 
 logger = logging.getLogger(__name__)
 logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
@@ -58,9 +60,9 @@ def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Datas
 
 def generate_rejected_responses(
     dataset: Dataset,
-    model: Union[AutoModelForCausalLM | PeftModel],
+    model: Union[AutoModelForCausalLM | PeftModel | LLM],
     tokenizer: AutoTokenizer,
-    config: DictConfig
+    config: DictConfig,
 ) -> Dataset:
     """
     Generates rejected responses using a pipeline and KeyDataset for efficient,
@@ -68,35 +70,26 @@ def generate_rejected_responses(
     """
     logger.info("Generating rejected responses...")
 
-    generator = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        return_full_text=False,
-        device=config.model.device,
-    )
-    
-    prompt_dataset = KeyDataset(dataset, "prompt")
     generated_texts = []
 
-    with model.disable_adapter(), torch.inference_mode():
-        for response_list in tqdm(generator(prompt_dataset,
-                                            batch_size=config.dataset.get("batch_size", 8),
-                                            max_new_tokens=config.dataset.max_length // 2,
-                                            do_sample=False,
-                                            temperature=1.0,
-                                            top_p=1.0,
-                                            top_k=50,
-                                            eos_token_id=tokenizer.eos_token_id,
-                                            pad_token_id=tokenizer.pad_token_id,),
-                                total=len(dataset), desc="Generating rejected responses",
-                                leave=False):
+    generations = batched_generate(
+        dataset["prompt"],
+        max_new_tokens=config.dataset.max_length // 2,
+        model=model,
+        tokenizer=tokenizer,
+        device=config.model.device,
+        num_return_sequences=1,
+        do_sample=False,
+        disable_peft_adapter=config.model.get("disable_adapter_during_eval", True),
+        adapter_name="ditto",
+    )
+
+    generated_texts = [
+        text if text.endswith(tokenizer.eos_token) else text + tokenizer.eos_token
+        for texts in generations
+        for text in texts[:1]
+    ]
             
-            text = response_list[0]['generated_text']
-            if not text.endswith(tokenizer.eos_token):
-                text += tokenizer.eos_token
-            generated_texts.append(text)
-        
     if "rejected" in dataset.column_names:
         dataset = dataset.remove_columns("rejected")
     updated_dataset = dataset.add_column("rejected", generated_texts)
@@ -120,13 +113,10 @@ def main(config: DictConfig):
     else:
         logger.info(f"Loading model from Hugging Face Hub: {model_path}")
         model_load_path = model_path
-
-    torch_dtype = torch.bfloat16 if config.model.use_bf16 else torch.float32
     
     model = AutoModelForCausalLM.from_pretrained(
         model_load_path, 
-        low_cpu_mem_usage=True, 
-        dtype=torch_dtype, 
+        dtype=torch.bfloat16 if config.model.use_bf16 else torch.float32, 
         attn_implementation=config.model.get("attn_implementation", "sdpa"))
     logger.info("Model loaded successfully.")
 
@@ -134,28 +124,30 @@ def main(config: DictConfig):
     lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ditto")
     model.set_adapter("ditto")
-    lora_adapter_path = Path(__file__).parent / "src/alignment/temp"
+    lora_adapter_path = Path(__file__).parent.parent / "src/alignment/temp"
     lora_adapter_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(lora_adapter_path))
 
     try:
-        vllm_config = config.trainer.get("vllm")
-        llm = LLM(
-            model=model.name_or_path,
-            tensor_parallel_size=1,
-            gpu_memory_utilization=vllm_config.get("gpu_mem_util"),
-            max_num_seqs=vllm_config.get("batch_size")
-            * vllm_config.get("rescale_batch")
-            * vllm_config.get("bootstrap_count"),
-            max_model_len=config.get("max_length"),
-            seed=42,
-            # num_batched_tokens=4096,
-            enable_sleep_mode=vllm_config.get("enable_sleep_mode"),
-            logprobs_mode="processed_logprobs",
-            enable_lora=True,
-        )
-        if vllm_config.get("enable_sleep_mode"):
-            llm.sleep(level=1)
+        llm = None
+        if config.get("use_vllm") and VLLM_AVAILABLE:
+            vllm_config = config.trainer.get("vllm")
+            llm = LLM(
+                model=model.name_or_path,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=vllm_config.get("gpu_mem_util"),
+                max_num_seqs=vllm_config.get("batch_size")
+                * vllm_config.get("rescale_batch")
+                * vllm_config.get("bootstrap_count"),
+                max_model_len=config.get("max_length"),
+                seed=42,
+                max_num_batched_tokens=4096,
+                enable_sleep_mode=vllm_config.get("enable_sleep_mode"),
+                logprobs_mode="processed_logprobs",
+                enable_lora=True,
+            )
+            if vllm_config.get("enable_sleep_mode"):
+                llm.sleep(level=2)
 
         tokenizer = AutoTokenizer.from_pretrained(model_load_path, padding_side="left")
         if tokenizer.pad_token is None:
