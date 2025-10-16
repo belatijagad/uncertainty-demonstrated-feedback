@@ -6,7 +6,13 @@ lora:
   lora_alpha: 32
   lora_dropout: 0.05
   target_modules:
-    - all-linear
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - down_proj
+    - up_proj
 
 model:
   device: "cuda"

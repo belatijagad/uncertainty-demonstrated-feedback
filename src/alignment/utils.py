@@ -66,7 +66,7 @@ def batched_generate(
 ) -> list[list[str]]:
     prompts = list(prompts)
 
-    if model.isinstance(LLM):
+    if isinstance(model, LLM):
         model.wake_up()
         params = SamplingParams(
             n=num_return_sequences,
@@ -84,11 +84,13 @@ def batched_generate(
         return_full_text=False,
         device=device,
     )
-    adapter_ctx = (
-        model.disable_adapter(adapter_name)
-        if disable_peft_adapter and hasattr(model, "disable_adapter")
-        else nullcontext()
-    )
+
+    if disable_peft_adapter and hasattr(model, "disable_adapter") and adapter_name:
+        model.set_adapter(adapter_name)
+        adapter_ctx = model.disable_adapter()
+    else:
+        adapter_ctx = nullcontext()
+        
     with adapter_ctx, torch.inference_mode():
         results = generator(
             prompts,

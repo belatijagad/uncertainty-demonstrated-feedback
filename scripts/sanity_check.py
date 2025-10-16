@@ -130,7 +130,7 @@ def main(config: DictConfig):
 
     try:
         llm = None
-        if config.get("use_vllm") and VLLM_AVAILABLE:
+        if config.trainer.get("use_vllm") and VLLM_AVAILABLE:
             vllm_config = config.trainer.get("vllm")
             llm = LLM(
                 model=model.name_or_path,
@@ -179,8 +179,7 @@ def main(config: DictConfig):
             train_dataset=train_dataset,
             max_length=config.dataset.max_length,
             max_prompt_length=config.dataset.max_length // 2,
-            model=model,
-            vllm_model=llm,
+            model=model if not config.trainer.use_vllm else llm,
             lora_adapter_path=lora_adapter_path,
             **config.resample
         )
@@ -190,8 +189,7 @@ def main(config: DictConfig):
             train_dataset=eval_dataset,
             max_length=config.dataset.max_length,
             max_prompt_length=config.dataset.max_length // 2,
-            model=model,
-            vllm_model=llm,
+            model=model if not config.trainer.use_vllm else llm,
             lora_adapter_path=lora_adapter_path,
             **config.resample,
             mode="eval",
