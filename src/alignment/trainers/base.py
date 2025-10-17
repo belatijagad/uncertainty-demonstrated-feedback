@@ -121,6 +121,12 @@ class BaseTrainer(ABC):
         logger.info(f"LoRA model detected: {trainable_params:,} trainable / {total_params:,} total parameters "
                     f"({trainable_params/total_params:.2%})")
 
+        self._lora_rank = 1
+        if isinstance(model, PeftModelForCausalLM):
+            lora_config = model.peft_config.get(adapter_name) or model.peft_config.get(model.active_adapter)
+            if lora_config is not None:
+                self._lora_rank = getattr(lora_config, "r", self._lora_rank)
+
         self.state = TrainerState()
         self.control = TrainerControl()
             

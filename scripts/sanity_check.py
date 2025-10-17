@@ -181,6 +181,7 @@ def main(config: DictConfig):
             max_prompt_length=config.dataset.max_length // 2,
             model=model if not config.trainer.use_vllm else llm,
             lora_adapter_path=lora_adapter_path,
+            lora_config=config.lora,
             **config.resample
         )
 
@@ -191,6 +192,7 @@ def main(config: DictConfig):
             max_prompt_length=config.dataset.max_length // 2,
             model=model if not config.trainer.use_vllm else llm,
             lora_adapter_path=lora_adapter_path,
+            lora_config=config.lora,
             **config.resample,
             mode="eval",
         )

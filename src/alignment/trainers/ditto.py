@@ -39,9 +39,14 @@ class DITTOTrainer(DPOTrainer):
 
         lora_request = None
         if self.llm is not None:
-            lora_path = Path("../temp/ditto")
-            self.model.save_pretrained(lora_path, adapter_name="ditto")
-            lora_request = LoRARequest("ditto", 1, str(lora_path.resolve()))
+            lora_path = Path(__file__).resolve().parent.parent / "temp" / self.adapter_name
+            lora_path.mkdir(parents=True, exist_ok=True)
+            self.model.save_pretrained(lora_path, adapter_name=self.adapter_name)
+            lora_request = LoRARequest(
+                adapter_name=self.adapter_name,
+                lora_rank=self._lora_rank,
+                lora_path=str(lora_path.resolve()),
+            )
 
         generations = batched_generate(
             prompts,

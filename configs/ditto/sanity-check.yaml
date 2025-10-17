@@ -53,7 +53,7 @@ trainer:
   repo_id: "belati/Ministral-8B-Instruct-2410_ditto"
   gradient_accumulation_steps: 1
   max_length: 512
-  use_vllm: false
+  use_vllm: true
   vllm:
     gpu_mem_util: 0.4
     enable_sleep_mode: true
