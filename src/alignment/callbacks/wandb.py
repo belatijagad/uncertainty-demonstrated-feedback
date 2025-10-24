@@ -33,18 +33,34 @@ class WandbCallback(TrainerCallback):
             return
 
         eval_metrics = kwargs.get("eval_metrics", {})
-        policy_samples = kwargs.get("policy_samples")
+        policy_samples = kwargs.get("policy_samples") or []
+        sample_prompts = kwargs.get("sample_prompts", [])
         
         wandb_log_data = {f"eval/{k}": v for k, v in eval_metrics.items()}
         if wandb_log_data:
             self.wandb_run.log(wandb_log_data, step=state.global_step)
 
-        if not policy_samples:
+        self._log_policy_samples(state, sample_prompts, policy_samples)
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Log the preliminary samples at the beginning of training."""
+        if not self.wandb_run:
             return
 
         sample_prompts = kwargs.get("sample_prompts", [])
-        num_samples_to_log = min(len(sample_prompts), len(policy_samples))
+        policy_samples = kwargs.get("policy_samples") or []
+        self._log_policy_samples(state, sample_prompts, policy_samples)
 
+    def on_train_end(self, args, state, control, **kwargs):
+        """Log the completed samples table at the end of training."""
+        if self.wandb_run and self._policy_table:
+            self.wandb_run.log({"eval/policy_samples": self._policy_table})
+
+    def _log_policy_samples(self, state, sample_prompts, policy_samples):
+        if not sample_prompts or not policy_samples or not self._policy_table:
+            return
+
+        num_samples_to_log = min(len(sample_prompts), len(policy_samples))
         if num_samples_to_log == 0:
             return
 
@@ -54,17 +70,14 @@ class WandbCallback(TrainerCallback):
         for idx in range(num_samples_to_log):
             prompt = sample_prompts[idx]
             sample = policy_samples[idx]
-            generated_text = ""
 
-            if is_vllm_output:
+            generated_text = ""
+            if is_vllm_output and getattr(sample, "outputs", None):
                 generated_text = sample.outputs[0].text
             elif is_string_output:
                 generated_text = sample
-            
-            self._policy_table.add_data(state.global_step, prompt, generated_text)
+            elif hasattr(sample, "get") and "generated_text" in sample:
+                generated_text = sample["generated_text"]
 
-    def on_train_end(self, args, state, control, **kwargs):
-        """Log the completed samples table at the end of training."""
-        if self.wandb_run and self._policy_table:
-            self.wandb_run.log({"eval/policy_samples": self._policy_table})
+            self._policy_table.add_data(state.global_step, prompt, generated_text)
             
