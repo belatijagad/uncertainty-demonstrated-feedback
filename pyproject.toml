@@ -21,6 +21,7 @@ dependencies = [
     "peft>=0.17.0",
     "tiktoken>=0.9.0",
     "hf-transfer",
+    "ipykernel>=7.0.1",
 ]
 
 [tool.uv.sources]
