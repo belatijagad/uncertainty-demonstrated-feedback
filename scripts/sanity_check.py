@@ -124,7 +124,7 @@ def main(config: DictConfig):
     lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ditto")
     model.set_adapter("ditto")
-    lora_adapter_path = Path(__file__).parent.parent / "src/alignment/temp/ditto"
+    lora_adapter_path = Path(__file__).parent.parent / "src/alignment/temp"
     lora_adapter_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(lora_adapter_path))
 
@@ -180,7 +180,7 @@ def main(config: DictConfig):
             max_length=config.dataset.max_length,
             max_prompt_length=config.dataset.max_length // 2,
             model=model if not config.trainer.use_vllm else llm,
-            lora_adapter_path=lora_adapter_path,
+            lora_adapter_path=lora_adapter_path / "ditto",
             lora_config=config.lora,
             **config.resample
         )
@@ -191,7 +191,7 @@ def main(config: DictConfig):
             max_length=config.dataset.max_length,
             max_prompt_length=config.dataset.max_length // 2,
             model=model if not config.trainer.use_vllm else llm,
-            lora_adapter_path=lora_adapter_path,
+            lora_adapter_path=lora_adapter_path / "ditto",
             lora_config=config.lora,
             **config.resample,
             mode="eval",

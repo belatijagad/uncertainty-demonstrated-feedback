@@ -86,11 +86,6 @@ class TrainerState:
         self.max_steps = max_steps
         self.num_train_epochs = num_train_epochs
         
-
-@dataclass
-class TrainerControl:
-    ...
-
 class BaseTrainer(ABC):
     def __init__(self, model: PeftModelForCausalLM, config: DictConfig, adapter_name: str,
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer, device: str,
@@ -128,7 +123,6 @@ class BaseTrainer(ABC):
                 self._lora_rank = getattr(lora_config, "r", self._lora_rank)
 
         self.state = TrainerState()
-        self.control = TrainerControl()
             
     def train(self) -> None:
         """Main training loop."""
@@ -140,7 +134,7 @@ class BaseTrainer(ABC):
         logger.info(f"Running Training {self.model.config.name_or_path} for {self.config.epochs} epochs.")
 
         for cb in self.callbacks: 
-            cb.on_train_begin(args=None, state=self.state, control=self.control)
+            cb.on_train_begin(args=None, state=self.state)
         self.optimizer.zero_grad()
 
         for i in range(num_train_steps):
@@ -153,7 +147,7 @@ class BaseTrainer(ABC):
             batch = {k: v.to(self.device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
             
             for cb in self.callbacks: 
-                cb.on_step_begin(args=None, state=self.state, control=self.control)
+                cb.on_step_begin(args=None, state=self.state)
 
             loss, metrics = self._get_batch_metrics(batch, "train")
             loss = loss / grad_acc_steps
@@ -169,14 +163,13 @@ class BaseTrainer(ABC):
                 self.state.last_metrics = metrics
                 
             for cb in self.callbacks:
-                cb.on_step_end(args=None, state=self.state, control=self.control)
+                cb.on_step_end(args=None, state=self.state)
 
             if (i + 1) % self.config.eval_steps == 0 and self.eval_dataloader is not None:
                 for cb in self.callbacks:
                     cb.on_eval_start(
                         args=None,
                         state=self.state,
-                        control=self.control,
                     )
 
                 eval_metrics = self.evaluate()
@@ -186,7 +179,6 @@ class BaseTrainer(ABC):
                     cb.on_eval_end(
                         args=None,
                         state=self.state,
-                        control=self.control,
                         eval_metrics=eval_metrics,
                         **eval_artifacts,
                     )
@@ -194,15 +186,16 @@ class BaseTrainer(ABC):
             if (i + 1) % self.config.save_steps == 0:
                 save_path = f"checkpoint-{self.global_step}"
                 self.save(output_dir=save_path)
-                self.push_to_hub(
-                    folder_path=save_path,
-                    commit_message=f"Step {self.global_step}",
-                    token=os.environ.get("HUGGINGFACE_API_KEY", None),
-                )
                 logger.info(f"Saved checkpoint to {save_path}.")
-        
+                
+                if self.config.get("push_to_hub", False):
+                    self.push_to_hub(
+                        folder_path=save_path,
+                        commit_message=f"Step {self.global_step}",
+                        token=os.environ.get("HUGGINGFACE_API_KEY", None),
+                    )        
         for cb in self.callbacks: 
-            cb.on_train_end(args=None, state=self.state, control=self.control)
+            cb.on_train_end(args=None, state=self.state)
 
         logger.info("Training complete.")
 

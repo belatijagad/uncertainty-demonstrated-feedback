@@ -25,16 +25,16 @@ wandb:
   project: "ditto"
   name: "ministral8binstruct_ditto"
   group: "ditto"
-  tags: ["ministral", "8b"]
+  tags: ["ministral", "8b", "sanity-check", "positive"]
   notes: "DITTO training on Ministral-8B-Instruct-2410"
 
 dataset:
   name_or_path: "belati/review-sentiment"
-  batch_size: 2
+  batch_size: 4
   max_length: 512
   num_workers: 0
 
-  num_eval_samples: 4
+  num_eval_samples: 12
 
 optimizer:
   lr: 5.0e-5 # x10 learning rate for LoRA, default was 5e-6

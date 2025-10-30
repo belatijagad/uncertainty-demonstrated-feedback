@@ -79,7 +79,7 @@ class DITTODataCollator(BaseDPOCollator):
 
         lora_request = (
             None if self.lora_adapter_path is None or not VLLM_AVAILABLE
-            else LoRARequest("ditto", self.lora_config.get("r"), str(self.lora_adapter_path))
+            else LoRARequest("ditto", 1, str(self.lora_adapter_path))
             )
 
         responses = batched_generate(
