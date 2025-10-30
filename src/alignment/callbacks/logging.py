@@ -10,7 +10,7 @@ class LoggingCallback(TrainerCallback):
     def __init__(self, logging_steps: int = 500):
         self.logging_steps = logging_steps
     
-    def on_step_end(self, args, state, control, **kwargs):
+    def on_step_end(self, args, state, **kwargs):
         """Log metrics to console at specified intervals."""
         if (state.global_step) % self.logging_steps == 0:
             metrics = getattr(state, "last_metrics", {})
@@ -22,7 +22,7 @@ class LoggingCallback(TrainerCallback):
                 report = f"Step {state.global_step:>6} | {metrics_str}"
                 logger.info(report)
     
-    def on_eval_end(self, args, state, control, **kwargs):
+    def on_eval_end(self, args, state, **kwargs):
         """Log evaluation results to console."""
         eval_metrics = kwargs.get("eval_metrics", {})
         if eval_metrics:

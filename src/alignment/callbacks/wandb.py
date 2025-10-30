@@ -22,12 +22,12 @@ class WandbCallback(TrainerCallback):
         self._policy_table_columns = ["step", "prompt", "sample"]
         self._policy_table = wandb.Table(columns=self._policy_table_columns)
     
-    def on_step_end(self, args, state, control, **kwargs):
+    def on_step_end(self, args, state, **kwargs):
         """Log metrics to wandb after each training step."""
         if self.wandb_run and hasattr(state, 'last_metrics'):
             self.wandb_run.log(state.last_metrics, step=state.global_step)
     
-    def on_eval_end(self, args, state, control, **kwargs):
+    def on_eval_end(self, args, state, **kwargs):
         """Log evaluation metrics and add samples to the table."""
         if not self.wandb_run:
             return
@@ -42,7 +42,7 @@ class WandbCallback(TrainerCallback):
 
         self._log_policy_samples(state, sample_prompts, policy_samples)
 
-    def on_train_begin(self, args, state, control, **kwargs):
+    def on_train_begin(self, args, state, **kwargs):
         """Log the preliminary samples at the beginning of training."""
         if not self.wandb_run:
             return
@@ -51,7 +51,7 @@ class WandbCallback(TrainerCallback):
         policy_samples = kwargs.get("policy_samples") or []
         self._log_policy_samples(state, sample_prompts, policy_samples)
 
-    def on_train_end(self, args, state, control, **kwargs):
+    def on_train_end(self, args, state, **kwargs):
         """Log the completed samples table at the end of training."""
         if self.wandb_run and self._policy_table:
             self.wandb_run.log({"eval/policy_samples": self._policy_table})

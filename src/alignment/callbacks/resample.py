@@ -26,13 +26,13 @@ class ResampleCallback(TrainerCallback):
 
         self.last_step_num = None
         
-    def on_train_begin(self, args, state, control, **kwargs):
-        self.reset_and_resample(args, state, control, **kwargs)
+    def on_train_begin(self, args, state, **kwargs):
+        self.reset_and_resample(args, state, **kwargs)
         
-    def on_step_begin(self, args, state, control, **kwargs):
-        self.reset_and_resample(args, state, control, **kwargs)
+    def on_step_begin(self, args, state, **kwargs):
+        self.reset_and_resample(args, state, **kwargs)
 
-    def reset_and_resample(self, args, state, control, **kwargs):
+    def reset_and_resample(self, args, state, **kwargs):
         step_num = int(state.global_step)
 
         if self.last_step_num == step_num:
