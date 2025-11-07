@@ -7,8 +7,7 @@ from collections import defaultdict
 
 import wandb
 import hydra
-from tqdm import tqdm
-from typing import Any, Union
+from typing import Any
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 
@@ -16,30 +15,37 @@ import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from huggingface_hub import login
-from peft import LoraConfig, PeftModel, get_peft_model, TaskType
+from peft import LoraConfig, get_peft_model, TaskType
 from datasets import DatasetDict, Dataset, load_dataset
-from transformers.pipelines import pipeline
-from transformers.pipelines.pt_utils import KeyDataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from alignment.trainers import DPOTrainer
-from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback
+from alignment.trainers import DITTOTrainer
 from alignment.collators import DITTODataCollator
-from alignment.utils import seed_everything
+from alignment.utils import seed_everything, generate_rejected_responses
+from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback, LoraCallback
+
+try:
+    from vllm import LLM
+    VLLM_AVAILABLE = True
+except ImportError:
+    VLLM_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
 
-def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Dataset, Dataset]:
+def process_dataset(dataset: DatasetDict, config: dict[str, Any], logger) -> tuple[Dataset, Dataset]:
     train_split = dataset["train"] if "train" in dataset else dataset["val"]
     eval_split = dataset["val"] if "val" in dataset else dataset["test"]
         
-    num_authors = config.get("num_authors", 5)
+    author_id = config.get("author_id")
+    if author_id is None:
+        raise ValueError("Configuration error: `config.dataset.author_id` must be specified.")
+
     train_samples_per_author = config.get("train_samples_per_author", 100)
     eval_samples_per_author = config.get("eval_samples_per_author", 20)
     
-    logger.info(f"Processing dataset: selecting {num_authors} authors with "
-                f"{train_samples_per_author} train and {eval_samples_per_author} eval samples each")
+    logger.info(f"Processing dataset: selecting author '{author_id}' with "
+                f"up to {train_samples_per_author} train and {eval_samples_per_author} eval samples.")
     
     train_author_data = defaultdict(list)
     for example in train_split:
@@ -51,14 +57,14 @@ def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Datas
         author = example["author_id"]
         eval_author_data[author].append(example)
     
-    train_authors = set(train_author_data.keys())
-    eval_authors = set(eval_author_data.keys())
-    common_authors = list(train_authors.intersection(eval_authors))
+    if author_id not in train_author_data:
+        raise ValueError(f"Specified author_id '{author_id}' not found in the train split.")
+    if author_id not in eval_author_data:
+        raise ValueError(f"Specified author_id '{author_id}' not found in the eval split.")
+        
+    selected_authors = [author_id]
     
-    random.shuffle(common_authors)
-    selected_authors = common_authors[:num_authors]
-    
-    logger.info(f"Selected authors: {selected_authors}")
+    logger.info(f"Selected author: {selected_authors[0]}")
     
     train_data, eval_data = [], []
     
@@ -81,54 +87,6 @@ def process_dataset(dataset: DatasetDict, config: dict[str, Any]) -> tuple[Datas
             
     return train_dataset, eval_dataset
 
-def generate_rejected_responses(
-    dataset: Dataset,
-    model: Union[AutoModelForCausalLM | PeftModel],
-    tokenizer: AutoTokenizer,
-    config: DictConfig
-) -> Dataset:
-    """
-    Generates rejected responses using a pipeline and KeyDataset for efficient,
-    streaming batch processing.
-    """
-    logger.info("Generating rejected responses...")
-
-    generator = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        return_full_text=False,
-        device=config.model.device,
-    )
-    
-    prompt_dataset = KeyDataset(dataset, "prompt")
-    generated_texts = []
-
-    with model.disable_adapter(), torch.inference_mode():
-        for response_list in tqdm(generator(prompt_dataset,
-                                            batch_size=config.dataset.get("batch_size", 8),
-                                            max_new_tokens=config.dataset.max_length // 2,
-                                            do_sample=False,
-                                            temperature=1.0,
-                                            top_p=1.0,
-                                            top_k=50,
-                                            eos_token_id=tokenizer.eos_token_id,
-                                            pad_token_id=tokenizer.pad_token_id,),
-                                total=len(dataset), desc="Generating rejected responses",
-                                leave=False):
-            
-            text = response_list[0]['generated_text']
-            if not text.endswith(tokenizer.eos_token):
-                text += tokenizer.eos_token
-            generated_texts.append(text)
-        
-    if "rejected" in dataset.column_names:
-        dataset = dataset.remove_columns("rejected")
-    updated_dataset = dataset.add_column("rejected", generated_texts)
-
-    logger.info(f"Generated {len(updated_dataset)} rejected responses")
-    return updated_dataset
-
 @hydra.main(version_base=None, config_path="../configs/ditto", config_name="default")
 def main(config: DictConfig):
     load_dotenv()
@@ -138,6 +96,7 @@ def main(config: DictConfig):
     
     model_path = config.model.name_or_path
     potential_local_path = os.path.join(get_original_cwd(), model_path)
+    adapter_name = config.model.adapter_name
     
     if os.path.isdir(potential_local_path):
         logger.info(f"Loading model from local directory: {potential_local_path}")
@@ -145,27 +104,49 @@ def main(config: DictConfig):
     else:
         logger.info(f"Loading model from Hugging Face Hub: {model_path}")
         model_load_path = model_path
-
-    torch_dtype = torch.bfloat16 if config.model.use_bf16 else torch.float32
     
     model = AutoModelForCausalLM.from_pretrained(
         model_load_path, 
-        low_cpu_mem_usage=True, 
-        dtype=torch_dtype, 
+        dtype=torch.bfloat16 if config.model.use_bf16 else torch.float32, 
         attn_implementation=config.model.get("attn_implementation", "sdpa"))
     logger.info("Model loaded successfully.")
 
     lora_config_dict = OmegaConf.to_container(config.lora, resolve=True)
     lora_config = LoraConfig(**lora_config_dict, task_type=TaskType.CAUSAL_LM)
-    model = get_peft_model(model, lora_config, adapter_name="ditto")
-    model.set_adapter("ditto")
+    model = get_peft_model(model, lora_config, adapter_name=adapter_name)
+    model.set_adapter(adapter_name)
+
+    project_root = Path(get_original_cwd())
+    lora_adapter_path = project_root / "src" / "alignment" / "temp" / adapter_name
+    lora_adapter_path.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(str(lora_adapter_path))
+
+    llm = None
+    if config.trainer.get("use_vllm") and VLLM_AVAILABLE:
+        vllm_config = config.trainer.get("vllm")
+        llm = LLM(
+            model=model.name_or_path,
+            tensor_parallel_size=1,
+            gpu_memory_utilization=vllm_config.get("gpu_mem_util"),
+            max_num_seqs=vllm_config.get("batch_size")
+            * vllm_config.get("rescale_batch")
+            * vllm_config.get("bootstrap_count"),
+            max_model_len=config.get("max_length"),
+            seed=42,
+            max_num_batched_tokens=4096,
+            enable_sleep_mode=vllm_config.get("enable_sleep_mode"),
+            logprobs_mode="processed_logprobs",
+            enable_lora=True,
+        )
+        if vllm_config.get("enable_sleep_mode"):
+            llm.sleep(level=2)
 
     tokenizer = AutoTokenizer.from_pretrained(model_load_path, padding_side="left")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     logger.info("Tokenizer loaded successfully.")
 
-    full_dataset = load_dataset(config.dataset.name_or_path)
+    full_dataset = load_dataset(config.dataset.name_or_path, logger)
     logger.info("Dataset loaded successfully.")
 
     run = None
@@ -183,14 +164,16 @@ def main(config: DictConfig):
         callbacks.append(wandb_callback)
 
     train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset)
-    eval_dataset = generate_rejected_responses(eval_dataset, model, tokenizer, config)
+    eval_dataset = generate_rejected_responses(eval_dataset, model, tokenizer, config, logger)
         
     data_collator = DITTODataCollator(
         tokenizer=tokenizer,
         train_dataset=train_dataset,
         max_length=config.dataset.max_length,
         max_prompt_length=config.dataset.max_length // 2,
-        model=model,
+        model=model if not config.trainer.use_vllm else llm,
+        lora_adapter_path=lora_adapter_path,
+        lora_config=config.lora,
         **config.resample
     )
 
@@ -199,7 +182,9 @@ def main(config: DictConfig):
         train_dataset=eval_dataset,
         max_length=config.dataset.max_length,
         max_prompt_length=config.dataset.max_length // 2,
-        model=model,
+        model=model if not config.trainer.use_vllm else llm,
+        lora_adapter_path=lora_adapter_path,
+        lora_config=config.lora,
         **config.resample,
         mode="eval",
     )
@@ -223,12 +208,15 @@ def main(config: DictConfig):
     
     callbacks.extend([
         ResampleCallback(collator=data_collator, model=model, resample_rate=config.get("resample_rate", 20)), 
-        LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500))
+        LoggingCallback(logging_steps=config.trainer.get("logging_steps", 500)),
+        LoraCallback(model=model, save_path=lora_adapter_path, adapter_name=adapter_name),
     ])
 
-    trainer = DPOTrainer(
+    trainer = DITTOTrainer(
         model=model,
-        adapter_name="ditto",
+        vllm_model=llm,
+        adapter_name=adapter_name,
+        lora_save_path=lora_adapter_path,
         config=config.trainer,
         tokenizer=tokenizer,
         train_dataloader=train_dataloader,
