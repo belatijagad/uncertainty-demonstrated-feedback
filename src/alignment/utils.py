@@ -2,11 +2,13 @@ import random
 from contextlib import nullcontext
 from typing import Union, Any, Iterable, Optional
 
-import numpy as np
 import torch
+import numpy as np
 from datasets import Dataset
-from transformers import PreTrainedTokenizer, PreTrainedModel
+from omegaconf import DictConfig
+from peft import PeftModelForCausalLM
 from transformers.pipelines import pipeline
+from transformers import PreTrainedTokenizer
 
 try:
     from vllm import LLM, SamplingParams
@@ -55,7 +57,7 @@ def process_data(full_dataset: Dataset, config: dict[str, Any], seed: int, logge
 def batched_generate(
     prompts: Iterable[str],
     max_new_tokens: int,
-    model: Union[PreTrainedModel | LLM],
+    model: PeftModelForCausalLM | LLM,
     tokenizer: Optional[PreTrainedTokenizer],
     device: Optional[str],
     lora_request: Optional[LoRARequest] = None,
@@ -102,3 +104,46 @@ def batched_generate(
         torch.cuda.empty_cache()
 
     return [[gen["generated_text"] for gen in maybe_list] for maybe_list in results]
+
+def generate_rejected_responses(
+    dataset: Dataset,
+    model: PeftModelForCausalLM | LLM,
+    tokenizer: PreTrainedTokenizer,
+    config: DictConfig,
+    logger,
+) -> Dataset:
+    """
+    Generates rejected responses using a pipeline and KeyDataset for efficient,
+    streaming batch processing.
+    """
+    logger.info("Generating rejected responses...")
+
+    generated_texts = []
+
+    generations = batched_generate(
+        dataset["prompt"],
+        max_new_tokens=config.dataset.max_length // 2,
+        model=model,
+        tokenizer=tokenizer,
+        device=config.model.device,
+        num_return_sequences=1,
+        do_sample=False,
+        disable_peft_adapter=config.model.get("disable_adapter_during_eval", True),
+    )
+
+    logger.info(f"Raw 'generations' output (first 2): {generations[:2]}")
+
+    generated_texts = [
+        text if text.endswith(tokenizer.eos_token) else text + tokenizer.eos_token
+        for texts in generations
+        for text in texts[:1]
+    ]
+
+    logger.info(f"Processed 'generated_texts' (first 2): {generated_texts[:2]}")
+            
+    if "rejected" in dataset.column_names:
+        dataset = dataset.remove_columns("rejected")
+    updated_dataset = dataset.add_column("rejected", generated_texts)
+
+    logger.info(f"Generated {len(updated_dataset)} rejected responses")
+    return updated_dataset
