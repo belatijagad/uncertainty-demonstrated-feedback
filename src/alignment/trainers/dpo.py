@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import logging
+from pathlib import Path
 from typing import Optional, Literal, Any
 
 from omegaconf import DictConfig
@@ -35,8 +36,9 @@ class DPOTrainer(BaseTrainer):
     """A trainer for Direct Preference Optimization."""
     def __init__(self, model: PreTrainedModel, adapter_name: str, config: DictConfig, 
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer, device: str,
-                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None):
-        super().__init__(model, config, adapter_name, tokenizer, train_dataloader, optimizer, device, eval_dataloader, callbacks)
+                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None,
+                 lora_save_path: Optional[Path] = None):
+        super().__init__(model, config, adapter_name, tokenizer, train_dataloader, optimizer, device, eval_dataloader, callbacks, lora_save_path)
                 
     def _get_batch_metrics(self, batch: dict, train_eval: Literal["train", "eval"]) -> tuple[torch.Tensor, dict]:
         """Computes the DPO loss and metrics for a given batch."""

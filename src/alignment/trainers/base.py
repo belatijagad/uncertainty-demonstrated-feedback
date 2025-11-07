@@ -17,6 +17,7 @@ import math
 import json
 import logging
 import dataclasses
+from pathlib import Path
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import Optional, Literal, Any
@@ -89,7 +90,8 @@ class TrainerState:
 class BaseTrainer(ABC):
     def __init__(self, model: PeftModelForCausalLM, config: DictConfig, adapter_name: str,
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer, device: str,
-                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None):
+                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None,
+                 lora_save_path: Optional[Path] = None):
         self.model = model
         self.config = config
         self.adapter_name = adapter_name
@@ -113,6 +115,7 @@ class BaseTrainer(ABC):
 
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.model.parameters())
+        self.lora_save_path = lora_save_path
         logger.info(f"LoRA model detected: {trainable_params:,} trainable / {total_params:,} total parameters "
                     f"({trainable_params/total_params:.2%})")
 

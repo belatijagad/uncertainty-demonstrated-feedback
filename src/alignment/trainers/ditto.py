@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 class DITTOTrainer(DPOTrainer):
     def __init__(self, model: PreTrainedModel, adapter_name: str, config: DictConfig, 
                  tokenizer: PreTrainedTokenizer, train_dataloader: DataLoader, optimizer: Optimizer, device: str,
-                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None, vllm_model: LLM = None):
-        super().__init__(model, adapter_name, config, tokenizer, train_dataloader, optimizer, device, eval_dataloader, callbacks)
+                 eval_dataloader: Optional[DataLoader] = None, callbacks: Optional[list[TrainerCallback]] = None, 
+                 vllm_model: LLM = None, lora_save_path: Optional[Path] = None):
+        super().__init__(model, adapter_name, config, tokenizer, train_dataloader, optimizer, device, eval_dataloader, callbacks, lora_save_path)
         self.llm = vllm_model
 
     def _generate_samples(self) -> tuple[list[str], list[str]]:
@@ -39,10 +40,7 @@ class DITTOTrainer(DPOTrainer):
 
         lora_request = None
         if self.llm is not None:
-            lora_path = Path(__file__).resolve().parent.parent / "temp" / "ditto"
-            lora_path.mkdir(parents=True, exist_ok=True)
-            self.model.save_pretrained(lora_path, adapter_name="ditto")
-            lora_request = LoRARequest("ditto", 1, str(lora_path.resolve()))
+            lora_request = LoRARequest(self.adapter_name, 1, str(self.lora_save_path.resolve()))
 
         generations = batched_generate(
             prompts,
@@ -54,7 +52,7 @@ class DITTOTrainer(DPOTrainer):
             num_return_sequences=1,
             do_sample=True,
             disable_peft_adapter=False,
-            adapter_name="ditto",
+            adapter_name=self.adapter_name,
         )
         all_policy_samples = [texts[0] for texts in generations]
 
