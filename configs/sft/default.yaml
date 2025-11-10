@@ -43,9 +43,15 @@ scheduler:
   warmup_steps: 100
 
 trainer:
-  epochs: 3
+  sample_during_eval: true
+  epochs: 60
+  beta: 0.1
+  warmup_steps: 100
   max_grad_norm: 1.0
   logging_steps: 10
   save_steps: 500
   eval_steps: 50
+  push_to_hub: true
+  repo_id: "belati/SmolLM3-3B_sft_author0"
   gradient_accumulation_steps: 1
+  max_length: 512
