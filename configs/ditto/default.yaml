@@ -1,3 +1,7 @@
+hydra:
+  run:
+    dir: outputs/ditto
+
 commit_message: "Initial commit"
 seed: 42
 

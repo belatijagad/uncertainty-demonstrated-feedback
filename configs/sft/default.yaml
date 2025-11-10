@@ -1,6 +1,9 @@
-run_dir: "experiments/sft"
+hydra:
+  run:
+    dir: outputs/sft
+
 seed: 42
-epochs: 3
+epochs: 20
 
 model:
   name_or_path: "HuggingFaceTB/SmolLM3-3B"
