@@ -14,7 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from huggingface_hub import login
+from huggingface_hub import login, create_repo
 from peft import LoraConfig, get_peft_model, TaskType
 from datasets import DatasetDict, Dataset, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -32,6 +32,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
+
+torch.set_float32_matmul_precision('high')
+
+torch._dynamo.config.capture_scalar_outputs = True
+torch._dynamo.config.allow_unspec_int_on_nn_module = True
 
 def process_dataset(dataset: DatasetDict, config: dict[str, Any], logger) -> tuple[Dataset, Dataset]:
     train_split = dataset["train"] if "train" in dataset else dataset["val"]
@@ -84,7 +89,7 @@ def process_dataset(dataset: DatasetDict, config: dict[str, Any], logger) -> tup
     eval_dataset = Dataset.from_list(eval_data)
     
     logger.info(f"Final dataset sizes: train={len(train_dataset)}, eval={len(eval_dataset)}")
-            
+
     return train_dataset, eval_dataset
 
 @hydra.main(version_base=None, config_path="../configs/ditto", config_name="default")
@@ -96,7 +101,7 @@ def main(config: DictConfig):
     
     model_path = config.model.name_or_path
     potential_local_path = os.path.join(get_original_cwd(), model_path)
-    adapter_name = config.model.adapter_name
+    adapter_name = config.model.get("adapter_name", "ditto")
     
     if os.path.isdir(potential_local_path):
         logger.info(f"Loading model from local directory: {potential_local_path}")
@@ -146,7 +151,7 @@ def main(config: DictConfig):
         tokenizer.pad_token = tokenizer.eos_token
     logger.info("Tokenizer loaded successfully.")
 
-    full_dataset = load_dataset(config.dataset.name_or_path, logger)
+    full_dataset = load_dataset(config.dataset.name_or_path)
     logger.info("Dataset loaded successfully.")
 
     run = None
@@ -163,7 +168,7 @@ def main(config: DictConfig):
         wandb_callback = WandbCallback(wandb_run=run)
         callbacks.append(wandb_callback)
 
-    train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset)
+    train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset, logger)
     eval_dataset = generate_rejected_responses(eval_dataset, model, tokenizer, config, logger)
         
     data_collator = DITTODataCollator(
@@ -240,8 +245,8 @@ def main(config: DictConfig):
 
     huggingface_token = os.environ.get("HUGGINGFACE_API_KEY", None)
     if config.trainer.push_to_hub and huggingface_token:
-        logger.info("Pushing model to hub.")
-        trainer.push_to_hub(folder_path=folder_path, commit_message=config.commit_message, token=huggingface_token)
+        logger.info("Pushing model to hub.")         
+        create_repo(repo_id=config.trainer.repo_id, token=huggingface_token, exist_ok=True)
         logger.info("Successfully pushed the model.")
     
 if __name__ == "__main__":
