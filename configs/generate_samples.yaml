@@ -1,12 +1,35 @@
+hydra:
+  run:
+    dir: outputs/generate
+
+seed: 42
+
+model:
+  name_or_path: "HuggingFaceTB/SmolLM3-3B"
+  adapter_name: "ditto"
+  adapter_path: "src/alignment/temp/ditto"
+  adapter_subfolder: null
+  device: "cuda"
+  use_bf16: true
+  attn_implementation: "flash_attention_2"
+
 dataset:
   name_or_path: "belati/ccat50"
+  author_id: 0
+  train_samples_per_author: 10
+  eval_samples_per_author: 5
+  split: "eval"
+  max_prompts: null
 
 generation:
-  is_few_shot: false
+  batch_size: 2
   max_new_tokens: 512
   do_sample: false
   temperature: 0.7
   top_p: 0.9
-  tok_k: 50
+  top_k: 50
   repetition_penalty: 1.1
   num_return_sequences: 1
+
+output:
+  filename: "generated_samples.json"
