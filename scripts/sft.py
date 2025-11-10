@@ -1,21 +1,23 @@
-import logging
+import os
 import random
+import logging
 from pathlib import Path
 
 import hydra
 import torch
-from hydra.utils import get_original_cwd
-from omegaconf import DictConfig, OmegaConf
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from datasets import Dataset, DatasetDict, load_dataset
+from hydra.utils import get_original_cwd
+from omegaconf import DictConfig, OmegaConf
+from huggingface_hub import create_repo, HfApi
 from peft import LoraConfig, get_peft_model, TaskType
+from datasets import Dataset, DatasetDict, load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from alignment.trainers import SFTTrainer
-from alignment.collators.sft import SFTDataCollator
 from alignment.callbacks import LoggingCallback
-from alignment.utils import seed_everything
+from alignment.collators.sft import SFTDataCollator
+from alignment.utils import seed_everything, build_model_card
 
 logger = logging.getLogger(__name__)
 
@@ -191,9 +193,30 @@ def main(config: DictConfig):
     if eval_metrics:
         logger.info("Evaluation metrics: %s", eval_metrics)
 
-    output_dir = Path(config.model.get("output_path", "outputs/sft_model"))
-    output_dir.mkdir(parents=True, exist_ok=True)
-    trainer.save(output_dir=str(output_dir))
+    folder_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "model"
+    folder_path.mkdir(parents=True, exist_ok=True)
+    trainer.save(output_dir=folder_path)
+
+    huggingface_token = os.environ.get("HUGGINGFACE_API_KEY", None)
+    if config.trainer.push_to_hub and huggingface_token:
+        repo_id = config.trainer.repo_id
+        logger.info(f"Pushing model artifacts to Hugging Face Hub repo '{repo_id}'.")
+        create_repo(repo_id=repo_id, token=huggingface_token, exist_ok=True)
+
+        model_card_path = folder_path / "README.md"
+        model_card_content = build_model_card(config)
+        model_card_path.write_text(model_card_content, encoding="utf-8")
+
+        api = HfApi(token=huggingface_token)
+        api.upload_folder(
+            repo_id=repo_id,
+            repo_type="model",
+            folder_path=str(folder_path),
+            commit_message="Upload DITTO model artifacts",
+            ignore_patterns=["*.tmp", "wandb/**"],
+        )
+        logger.info("Successfully pushed the model and model card.")
+
 
 if __name__ == "__main__":
     main()

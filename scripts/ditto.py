@@ -14,14 +14,14 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from huggingface_hub import login, create_repo
+from huggingface_hub import login, create_repo, HfApi
 from peft import LoraConfig, get_peft_model, TaskType
 from datasets import DatasetDict, Dataset, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from alignment.trainers import DITTOTrainer
 from alignment.collators import DITTODataCollator
-from alignment.utils import seed_everything, generate_rejected_responses
+from alignment.utils import seed_everything, generate_rejected_responses, build_model_card
 from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback, LoraCallback
 
 try:
@@ -244,10 +244,27 @@ def main(config: DictConfig):
     trainer.save(output_dir=folder_path)
 
     huggingface_token = os.environ.get("HUGGINGFACE_API_KEY", None)
-    if config.trainer.push_to_hub and huggingface_token:
-        logger.info("Pushing model to hub.")         
-        create_repo(repo_id=config.trainer.repo_id, token=huggingface_token, exist_ok=True)
-        logger.info("Successfully pushed the model.")
+    if config.trainer.push_to_hub:
+        if not huggingface_token:
+            logger.warning("Push to hub requested but HUGGINGFACE_API_KEY is not set; skipping upload.")
+        else:
+            repo_id = config.trainer.repo_id
+            logger.info(f"Pushing model artifacts to Hugging Face Hub repo '{repo_id}'.")
+            create_repo(repo_id=repo_id, token=huggingface_token, exist_ok=True)
+
+            model_card_path = folder_path / "README.md"
+            model_card_content = build_model_card(config)
+            model_card_path.write_text(model_card_content, encoding="utf-8")
+
+            api = HfApi(token=huggingface_token)
+            api.upload_folder(
+                repo_id=repo_id,
+                repo_type="model",
+                folder_path=str(folder_path),
+                commit_message="Upload DITTO model artifacts",
+                ignore_patterns=["*.tmp", "wandb/**"],
+            )
+            logger.info("Successfully pushed the model and model card.")
     
 if __name__ == "__main__":
     main()

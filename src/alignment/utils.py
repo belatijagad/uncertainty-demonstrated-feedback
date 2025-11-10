@@ -147,3 +147,47 @@ def generate_rejected_responses(
 
     logger.info(f"Generated {len(updated_dataset)} rejected responses")
     return updated_dataset
+
+def build_model_card(config: DictConfig) -> str:
+    """Assemble a lightweight model card using config metadata."""
+    base_model = getattr(config.model, "name_or_path", "unknown")
+    dataset_name = getattr(config.dataset, "name_or_path", "unknown")
+    license_name = config.model.get("license", "apache-2.0") if hasattr(config.model, "get") else "apache-2.0"
+    repo_id = config.trainer.get("repo_id", "model") if hasattr(config.trainer, "get") else "model"
+
+    metadata = {
+        "license": license_name,
+        "base_model": base_model,
+        "datasets": [dataset_name] if dataset_name else [],
+        "tags": list(config.get("model_card_tags", [])) or ["alignment", "ditto"],
+    }
+
+    header_lines = ["---"]
+    for key, value in metadata.items():
+        if not value:
+            continue
+        if isinstance(value, list):
+            header_lines.append(f"{key}:")
+            for item in value:
+                header_lines.append(f"  - {item}")
+        else:
+            header_lines.append(f"{key}: {value}")
+    header_lines.append("---")
+
+    body = [
+        f"# {repo_id}",
+        "",
+        "## Model Summary",
+        f"- Base model: `{base_model}`",
+        f"- Dataset: `{dataset_name}`",
+        "- Training objective: DITTO preference alignment",
+        "",
+        "## Intended Use",
+        "This model is intended for research on preference alignment. Update this section with concrete guidance before sharing broadly.",
+        "",
+        "## Limitations",
+        "Document evaluation metrics, known failure modes, and ethical considerations here before public release.",
+    ]
+
+    return "\n".join(header_lines + [""] + body)
+
