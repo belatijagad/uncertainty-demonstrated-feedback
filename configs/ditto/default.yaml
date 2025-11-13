@@ -28,10 +28,10 @@ model:
 wandb:
   enabled: true
   project: "ditto"
-  name: "SmolLM3-3B_ditto_author0" #"ministral8binstruct_ditto"
+  name: "SmolLM3-3B_uditto_author0" #"ministral8binstruct_ditto"
   group: "ditto"
-  tags: ["smollm3", "3b", "sanity-check", "author_1"]
-  notes: "DITTO training on HuggingFaceTB/SmolLM3-3B" #"DITTO training on Ministral-8B-Instruct-2410"
+  tags: ["smollm3", "3b", "author_1", "MSP"]
+  notes: "UDITTO MSP training on HuggingFaceTB/SmolLM3-3B" #"DITTO training on Ministral-8B-Instruct-2410"
 
 dataset:
   name_or_path: "belati/ccat50"
@@ -57,7 +57,7 @@ trainer:
   save_steps: 500
   eval_steps: 50
   push_to_hub: true
-  repo_id: "belati/SmolLM3-3B_ditto_author0"
+  repo_id: "belati/SmolLM3-3B_uditto_author0"
   gradient_accumulation_steps: 1
   max_length: 512
   use_vllm: false

@@ -5,20 +5,20 @@ hydra:
 seed: 42
 
 model:
-  name_or_path: "HuggingFaceTB/SmolLM3-3B"
-  adapter_name: "ditto"
-  adapter_path: "src/alignment/temp/ditto"
-  adapter_subfolder: null
-  device: "cuda"
+  name_or_path: HuggingFaceTB/SmolLM3-3B
+  adapter_name: sft
+  adapter_path: belati/SmolLM3-3B_sft_author0
+  adapter_subfolder: sft
+  device: cuda
   use_bf16: true
-  attn_implementation: "flash_attention_2"
+  attn_implementation: flash_attention_2
 
 dataset:
-  name_or_path: "belati/ccat50"
+  name_or_path: belati/ccat50
   author_id: 0
   train_samples_per_author: 10
   eval_samples_per_author: 5
-  split: "eval"
+  split: eval
   max_prompts: null
 
 generation:
@@ -32,4 +32,4 @@ generation:
   num_return_sequences: 1
 
 output:
-  filename: "generated_samples.json"
+  filename: generated_samples.json

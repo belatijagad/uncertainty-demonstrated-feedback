@@ -29,8 +29,18 @@ def setup_model_and_tokenizer(config: DictConfig) -> tuple[AutoModelForCausalLM,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(config.model.name_or_path, padding_side="left")
+    
+    logger.info("Adding special tokens and resizing model embeddings...")
+    tokenizer.add_special_tokens({
+        "pad_token": "<|pad|>",
+        "additional_special_tokens": ["<|im_start|>", "<|im_end|>"],
+    })
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    logger.info(f"Resizing token embeddings from {model.config.vocab_size} to {len(tokenizer)}")
+    model.resize_token_embeddings(len(tokenizer))
 
     adapter_name = config.model.get("adapter_name")
     adapter_path = config.model.get("adapter_path")
