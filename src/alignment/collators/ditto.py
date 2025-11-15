@@ -14,24 +14,17 @@
 # limitations under the License.
 
 import random
-import logging
 from typing import Any, Optional, Union
 from dataclasses import dataclass, field
 
 from torch.utils.data import Dataset
 from transformers import PreTrainedModel
 
-try:
-    from vllm import LLM
-    from vllm.lora.request import LoRARequest
-    VLLM_AVAILABLE = True
-except ImportError:
-    VLLM_AVAILABLE = False
+from vllm import LLM
+from vllm.lora.request import LoRARequest
 
 from alignment.collators import BaseDPOCollator
 from alignment.utils import batched_generate
-
-logger = logging.getLogger(__name__)
 
 @dataclass
 class DITTODataCollator(BaseDPOCollator):
@@ -64,40 +57,45 @@ class DITTODataCollator(BaseDPOCollator):
         """
 
         if self.model is None:
-            logger.error("DITTOCollator's model is None.")
+            self.logger.error("DITTOCollator's model is None.")
             raise ValueError("Model is not defined.")
 
-        logger.info(f"Resampling data at step {step}")
+        self.logger.info(f"Resampling data at step {step}")
         self.last_sampled_step = step
         if step not in self.cache: self.cache[step] = {}
 
         if len(self.train_dataset) == 0 or len(self.train_dataset["prompt"]) == 0:
-            logger.warning("Empty dataset provided for DITTO resampling")
+            self.logger.warning("Empty dataset provided for DITTO resampling")
             return
 
         prompts = list(dict.fromkeys(self.train_dataset["prompt"]))
 
         lora_request = (
-            None if self.lora_adapter_path is None or not VLLM_AVAILABLE
+            None if self.lora_adapter_path is None
             else LoRARequest("ditto", 1, str(self.lora_adapter_path))
             )
+        gen_kwargs = {
+            "max_new_tokens": self.max_length - self.max_prompt_length,
+            "num_return_sequences": self.bootstrap_count,
+            "do_sample": True,
+        }
 
         responses = batched_generate(
             prompts,
-            max_new_tokens=self.max_length - self.max_prompt_length,
             model=self.model,
             tokenizer=self.tokenizer,
             device=None if isinstance(self.model, LLM) else self.model.device,
             lora_request=lora_request,
-            num_return_sequences=self.bootstrap_count,
-            do_sample=True,
             disable_peft_adapter=False,
             adapter_name="ditto",
+            gen_kwargs=gen_kwargs,
         )
 
         for prompt, generations in zip(prompts, responses, strict=True):
             cache_slot = self.cache[step].setdefault(prompt, [])
-            for generated_text in generations:
+            generation_list = generations if isinstance(generations, list) else [generations]
+            for gen in generation_list:
+                generated_text = gen["generated_text"]
                 if not generated_text.endswith(self.tokenizer.eos_token):
                     generated_text = generated_text + self.tokenizer.eos_token
                 cache_slot.append(generated_text)
@@ -110,7 +108,8 @@ class DITTODataCollator(BaseDPOCollator):
         noisy_pairs = []
         # Compare against all previous steps
         for step_b in range(step_a):
-            if prompt not in self.cache.get(step_b, {}): continue
+            if prompt not in self.cache.get(step_b, {}):
+                continue
             
             # The generation from step_a is newer than from step_b
             for newer_rejection in self.cache[step_a][prompt]:
@@ -134,7 +133,8 @@ class DITTODataCollator(BaseDPOCollator):
 
             # 2. Replay and Noisy pairs
             for step_a in self.cache.keys():
-                if prompt not in self.cache.get(step_a, {}): continue
+                if prompt not in self.cache.get(step_a, {}):
+                    continue
                 
                 # Replay pairs (gold chosen vs. past rejected)
                 if step_a < self.last_sampled_step:
@@ -162,7 +162,7 @@ class DITTODataCollator(BaseDPOCollator):
         final_triplets = self._get_ditto_sampled_triplets(features)
         
         if not final_triplets:
-            logger.warning("DITTO sampling returned no triplets for this batch. Returning empty dict.")
+            self.logger.warning("DITTO sampling returned no triplets for this batch. Returning empty dict.")
             
             return {}
 

@@ -73,6 +73,7 @@ def batched_generate(
     gen_kwargs = gen_kwargs or {}
     num_return_seqs = gen_kwargs.get("num_return_sequences", 1)
     max_return_tokens = gen_kwargs.get("max_return_tokens", 512)
+    do_sample = gen_kwargs.get("do_sample", True)
 
     results = []
     def _append_batch(samples: list[dict]) -> None:
@@ -90,7 +91,7 @@ def batched_generate(
         params = SamplingParams(
             n=num_return_seqs,
             max_tokens=max_return_tokens,
-            # temperature=1.0 if do_sample else 0.0,
+            temperature=0.7 if do_sample else 0.0,
         )
         outputs = model.generate(prompts, params, lora_request=lora_request)
         model.sleep(level=2)
