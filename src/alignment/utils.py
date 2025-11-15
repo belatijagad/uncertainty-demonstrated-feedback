@@ -7,15 +7,10 @@ import numpy as np
 from datasets import Dataset
 from omegaconf import DictConfig
 from peft import PeftModelForCausalLM
-from transformers.pipelines import pipeline
 from transformers import PreTrainedTokenizer
 
-try:
-    from vllm import LLM, SamplingParams
-    from vllm.lora.request import LoRARequest
-    VLLM_AVAILABLE = True
-except ImportError:
-    VLLM_AVAILABLE = False
+from vllm import LLM, SamplingParams
+from vllm.lora.request import LoRARequest
 
 
 def seed_everything(seed: int=42) -> None:
@@ -56,54 +51,103 @@ def process_data(full_dataset: Dataset, config: dict[str, Any], seed: int, logge
     
 def batched_generate(
     prompts: Iterable[str],
-    max_new_tokens: int,
     model: PeftModelForCausalLM | LLM,
     tokenizer: Optional[PreTrainedTokenizer],
-    device: Optional[str],
+    device: str = "cpu",
     lora_request: Optional[LoRARequest] = None,
-    num_return_sequences: int = 1,
-    do_sample: bool = False,
     disable_peft_adapter: bool = False,
     adapter_name: Optional[str] = None,
-) -> list[list[str]]:
+    gen_kwargs: dict | None = None,
+) -> list[dict]:
+    """
+    returns [ # For each batch
+        [ # For each generated sample (same text, just different chosen)
+            {"generated_text": ..., "generated_token_ids": ..., "logits": ...}, # sample 1
+            {"generated_text": ..., "generated_token_ids": ..., "logits": ...}, # sample 2
+            ...
+        ], # batch 1
+        ..., # batch 2
+    ]
+    """
     prompts = list(prompts)
+    gen_kwargs = gen_kwargs or {}
+    num_return_seqs = gen_kwargs.get("num_return_sequences", 1)
+    max_return_tokens = gen_kwargs.get("max_return_tokens", 512)
+
+    results = []
+    def _append_batch(samples: list[dict]) -> None:
+        results.append(samples[0] if num_return_seqs == 1 else samples)
+
+    def _format_sample(text, token_ids, logprobs):
+        return {
+            "generated_text": text,
+            "generated_token_ids": token_ids,
+            "logprobs": logprobs,
+        }
 
     if isinstance(model, LLM):
         model.wake_up()
         params = SamplingParams(
-            n=num_return_sequences,
-            max_tokens=max_new_tokens,
-            temperature=1.0 if do_sample else 0.0,
+            n=num_return_seqs,
+            max_tokens=max_return_tokens,
+            # temperature=1.0 if do_sample else 0.0,
         )
         outputs = model.generate(prompts, params, lora_request=lora_request)
         model.sleep(level=2)
-        return [[gen.text for gen in out.outputs] for out in outputs]
 
-    generator = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        return_full_text=False,
-        device=device,
-    )
-
-    if disable_peft_adapter and hasattr(model, "disable_adapter") and adapter_name:
-        model.set_adapter(adapter_name)
-        adapter_ctx = model.disable_adapter()
+        for batch in outputs: # Iterate through batch
+            batch_samples = [
+                _format_sample(
+                    generation.text,
+                    generation.token_ids,
+                    generation.logprobs,
+                )
+                for generation in batch.outputs
+            ]
+            _append_batch(batch_samples)
     else:
-        adapter_ctx = nullcontext()
-        
-    with adapter_ctx, torch.inference_mode():
-        results = generator(
-            prompts,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            num_return_sequences=num_return_sequences,
-        )
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        inputs = tokenizer(prompts, padding=True, return_tensors="pt").to(device)
+        model_inputs = {k: v for k, v in inputs.items()}
 
-    return [[gen["generated_text"] for gen in maybe_list] for maybe_list in results]
+        if disable_peft_adapter and hasattr(model, "disable_adapter") and adapter_name:
+            model.set_adapter(adapter_name)
+            adapter_ctx = model.disable_adapter()
+        else:
+            adapter_ctx = nullcontext()
+            
+        with adapter_ctx, torch.inference_mode():
+            outputs = model.generate(**model_inputs, **gen_kwargs)
+
+        logits = torch.stack(outputs.logits, dim=1).cpu() if hasattr(outputs, "logits") and outputs.logits else None
+        if logits is None and hasattr(outputs, "scores") and outputs.scores:
+            logits = torch.stack(outputs.scores, dim=1).cpu()
+        logprobs = torch.log_softmax(logits, dim=-1) if logits is not None else None
+        sequences = outputs.sequences.cpu()
+
+        total_sequences = sequences.size(0)
+        for offset in range(0, total_sequences, num_return_seqs):
+            seq_chunk = sequences[offset: offset + num_return_seqs]
+            logprob_chunk = (
+                logprobs[offset: offset + num_return_seqs]
+                if logprobs is not None
+                else [None] * len(seq_chunk)
+            )
+
+            batch_samples = [
+                _format_sample(
+                    tokenizer.decode(seq, skip_special_tokens=True),
+                    seq,
+                    logprob_chunk[idx] if logprobs is not None else None,
+                )
+                for idx, seq in enumerate(seq_chunk)
+            ]
+
+            _append_batch(batch_samples)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return results
 
 def generate_rejected_responses(
     dataset: Dataset,
@@ -119,16 +163,19 @@ def generate_rejected_responses(
     logger.info("Generating rejected responses...")
 
     generated_texts = []
+    gen_kwargs = {
+        "num_return_sequences": 1,
+        "do_sample": False,
+        "max_new_tokens": config.dataset.max_length // 2,
+    }
 
     generations = batched_generate(
         dataset["prompt"],
-        max_new_tokens=config.dataset.max_length // 2,
         model=model,
         tokenizer=tokenizer,
         device=config.model.device,
-        num_return_sequences=1,
-        do_sample=False,
-        disable_peft_adapter=config.model.get("disable_adapter_during_eval", True),
+        disable_peft_adapter=config.model.disable_adapter_during_eval,
+        gen_kwargs=gen_kwargs,
     )
 
     logger.info(f"Raw 'generations' output (first 2): {generations[:2]}")
