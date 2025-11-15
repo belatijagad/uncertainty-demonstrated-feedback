@@ -20,11 +20,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from alignment.utils import generate_rejected_responses
 
-try:
-    from vllm import LLM
-    VLLM_AVAILABLE = True
-except ImportError:
-    VLLM_AVAILABLE = False
+from vllm import LLM
 
 from alignment.trainers import DITTOTrainer
 from alignment.utils import seed_everything
@@ -110,7 +106,7 @@ def main(config: DictConfig):
     model.save_pretrained(str(lora_adapter_path))
 
     llm = None
-    if config.trainer.get("use_vllm") and VLLM_AVAILABLE:
+    if config.trainer.get("use_vllm"):
         vllm_config = config.trainer.get("vllm")
         llm = LLM(
             model=model.name_or_path,

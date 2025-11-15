@@ -24,11 +24,7 @@ from alignment.collators import DITTODataCollator
 from alignment.utils import seed_everything, generate_rejected_responses, build_model_card
 from alignment.callbacks import ResampleCallback, LoggingCallback, WandbCallback, LoraCallback
 
-try:
-    from vllm import LLM
-    VLLM_AVAILABLE = True
-except ImportError:
-    VLLM_AVAILABLE = False
+from vllm import LLM
 
 logger = logging.getLogger(__name__)
 logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
@@ -127,7 +123,7 @@ def main(config: DictConfig):
     model.save_pretrained(str(lora_adapter_path))
 
     llm = None
-    if config.trainer.get("use_vllm") and VLLM_AVAILABLE:
+    if config.trainer.get("use_vllm"):
         vllm_config = config.trainer.get("vllm")
         llm = LLM(
             model=model.name_or_path,
