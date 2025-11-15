@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+
 import torch
 from transformers import PreTrainedTokenizerBase
 from torch.nn.utils.rnn import pad_sequence
@@ -34,6 +36,7 @@ class BaseDPOCollator:
     """
     """Base class for DPO-style collators that handles all tokenization and padding."""
     tokenizer: PreTrainedTokenizerBase
+    logger: logging.Logger
     max_length: int
     max_prompt_length: int
     label_pad_token_id: int = -100
