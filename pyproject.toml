@@ -13,6 +13,7 @@ dependencies = [
     "transformers>=4.53.1",
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.12/flash_attn-2.8.3+cu128torch2.8-cp313-cp313-linux_x86_64.whl ; sys_platform == 'linux' and python_version == '3.13'",
     "vllm>=0.11.0 ; sys_platform == 'linux'",
+    "vllm @ file:./deps/vllm-0.11.1rc7.dev209+gf36292dbe.d20251115-cp313-cp313-macosx_15_0_arm64 ; sys_platform == 'darwin'",
     "mypy>=1.17.0",
     "google-genai>=1.28.0",
     "huggingface-hub>=0.33.4",
@@ -22,6 +23,7 @@ dependencies = [
     "tiktoken>=0.9.0",
     "hf-transfer",
     "ipykernel>=7.0.1",
+    "numpy>=2.2.6",
 ]
 
 [tool.uv.sources]
