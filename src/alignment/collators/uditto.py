@@ -1,8 +1,15 @@
 import torch
 from typing import Optional
 from dataclasses import dataclass
+from torch.nn.utils.rnn import pad_sequence
+
+from vllm import LLM
+from vllm.lora.request import LoRARequest
+
 from alignment.collators import DITTODataCollator
 from alignment.estimators import BaseEstimator
+from alignment.utils import batched_generate
+# TODO: UDITTO
 
 @dataclass
 class UDITTODataCollator(DITTODataCollator):
@@ -15,6 +22,83 @@ class UDITTODataCollator(DITTODataCollator):
     higher_score_is_better: bool = False
     estimator: Optional[BaseEstimator] = None
     threshold: Optional[float] = None
+
+    def resample(self, step: int) -> None:
+        """
+        Generates new responses using Hugging Face's text generation pipeline
+        and caches them for DITTO's dynamic batching.
+        """
+
+        if self.model is None:
+            self.logger.error("DITTOCollator's model is None.")
+            raise ValueError("Model is not defined.")
+        if isinstance(self.model, LLM):
+            self.logger.error("UDITTO requires a Hugging Face model for uncertainty scoring.")
+            raise ValueError("UDITTODataCollator only supports Hugging Face models for resampling.")
+
+        self.logger.info(f"Resampling data at step {step}")
+        self.last_sampled_step = step
+        if step not in self.cache:
+            self.cache[step] = {}
+
+        if len(self.train_dataset) == 0 or len(self.train_dataset["prompt"]) == 0:
+            self.logger.warning("Empty dataset provided for DITTO resampling")
+            return
+
+        prompts = list(dict.fromkeys(self.train_dataset["prompt"]))
+
+        lora_request = (
+            None if self.lora_adapter_path is None
+            else LoRARequest("ditto", 1, str(self.lora_adapter_path))
+            )
+        gen_kwargs = {
+            "max_new_tokens": self.max_length - self.max_prompt_length,
+            "num_return_sequences": self.bootstrap_count,
+            "do_sample": True,
+            "return_dict_in_generate": True,
+            "output_logits": True,
+        }
+
+        responses = batched_generate(
+            prompts,
+            model=self.model,
+            tokenizer=self.tokenizer,
+            device=None if isinstance(self.model, LLM) else self.model.device,
+            lora_request=lora_request,
+            disable_peft_adapter=False,
+            adapter_name="ditto",
+            gen_kwargs=gen_kwargs,
+        )
+
+        model_device = next(self.model.parameters()).device
+        flattened_sequences: list[torch.Tensor] = []
+
+        for _prompt, generations in zip(prompts, responses, strict=True):
+            generation_list = generations if isinstance(generations, list) else [generations]
+            for gen in generation_list:
+                token_ids = gen.get("generated_token_ids")
+                if token_ids is None:
+                    continue
+                if not isinstance(token_ids, torch.Tensor):
+                    token_ids = torch.tensor(token_ids, dtype=torch.long)
+                flattened_sequences.append(token_ids.to(model_device))
+
+        if not flattened_sequences:
+            self.logger.warning("UDITTO resample produced no generations to cache.")
+            return
+
+        generated_ids = pad_sequence(
+            flattened_sequences,
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id,
+        )
+
+        self._process_and_cache_generations(
+            generated_ids=generated_ids,
+            prompts=prompts,
+            prompt_len=self.max_prompt_length,
+            step=step,
+        )
 
     def _process_and_cache_generations(self, generated_ids: torch.Tensor, prompts: list[str], prompt_len: int, step: int):
         """
@@ -44,7 +128,8 @@ class UDITTODataCollator(DITTODataCollator):
         
         response_idx = 0
         for prompt in prompts:
-            if prompt not in self.cache[step]: self.cache[step][prompt] = []
+            if prompt not in self.cache[step]:
+                self.cache[step][prompt] = []
             for _ in range(self.bootstrap_count):
                 score = scores[response_idx].item()
 
