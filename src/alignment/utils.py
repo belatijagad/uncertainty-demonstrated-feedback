@@ -117,7 +117,7 @@ def batched_generate(
             adapter_ctx = nullcontext()
             
         with adapter_ctx, torch.inference_mode():
-            outputs = model.generate(**model_inputs, **gen_kwargs)
+            outputs = model.generate(**model_inputs, **gen_kwargs, return_dict_in_generate=True)
 
         logits = torch.stack(outputs.logits, dim=1).cpu() if hasattr(outputs, "logits") and outputs.logits else None
         if logits is None and hasattr(outputs, "scores") and outputs.scores:
@@ -175,17 +175,21 @@ def generate_rejected_responses(
         model=model,
         tokenizer=tokenizer,
         device=config.model.device,
-        disable_peft_adapter=config.model.disable_adapter_during_eval,
+        disable_peft_adapter=True,
         gen_kwargs=gen_kwargs,
     )
 
     logger.info(f"Raw 'generations' output (first 2): {generations[:2]}")
 
-    generated_texts = [
-        text if text.endswith(tokenizer.eos_token) else text + tokenizer.eos_token
-        for texts in generations
-        for text in texts[:1]
-    ]
+    generated_texts: list[str] = []
+    for entry in generations:
+        samples = entry if isinstance(entry, list) else [entry]
+        if not samples:
+            continue
+        text = samples[0].get("generated_text", "")
+        if not text.endswith(tokenizer.eos_token):
+            text = text + tokenizer.eos_token
+        generated_texts.append(text)
 
     logger.info(f"Processed 'generated_texts' (first 2): {generated_texts[:2]}")
             
