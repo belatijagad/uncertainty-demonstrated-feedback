@@ -15,6 +15,7 @@ Create the virtual environment using `uv` and install the project dependencies.
 ```bash
 uv venv -p 3.13
 source .venv/bin/activate
+uv sync
 uv pip install -e .
 ```
 
