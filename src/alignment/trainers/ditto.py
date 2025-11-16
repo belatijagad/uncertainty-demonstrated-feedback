@@ -30,8 +30,10 @@ class DITTOTrainer(DPOTrainer):
         prompts = [example["prompt"] for example in eval_dataset]
         
         lora_request = None
-        if self.llm is not None:
-            lora_request = LoRARequest(self.adapter_name, 1, str(self.lora_save_path.resolve()))
+        lora_request = (
+            None if self.llm is None
+            else LoRARequest(self.adapter_name, 1, str(self.lora_save_path / "ditto"))
+            )
 
         gen_kwargs = {
             "do_sample": False,

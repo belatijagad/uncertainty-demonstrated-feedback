@@ -72,7 +72,7 @@ class DITTODataCollator(BaseDPOCollator):
 
         lora_request = (
             None if self.lora_adapter_path is None
-            else LoRARequest("ditto", 1, str(self.lora_adapter_path))
+            else LoRARequest("ditto", 1, str(self.lora_adapter_path / "ditto"))
             )
         gen_kwargs = {
             "max_new_tokens": self.max_length - self.max_prompt_length,

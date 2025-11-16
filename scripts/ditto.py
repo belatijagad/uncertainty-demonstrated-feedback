@@ -118,7 +118,8 @@ def main(config: DictConfig):
     model.set_adapter(adapter_name)
 
     project_root = Path(get_original_cwd())
-    lora_adapter_path = project_root / "src" / "alignment" / "temp" / adapter_name
+    lora_adapter_path = project_root / ".temp"
+
     lora_adapter_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(lora_adapter_path))
 
@@ -134,7 +135,7 @@ def main(config: DictConfig):
             * vllm_config.get("bootstrap_count"),
             max_model_len=config.get("max_length"),
             seed=42,
-            max_num_batched_tokens=4096,
+            max_num_batched_tokens=8192,
             enable_sleep_mode=vllm_config.get("enable_sleep_mode"),
             logprobs_mode="processed_logprobs",
             enable_lora=True,
@@ -165,7 +166,7 @@ def main(config: DictConfig):
         callbacks.append(wandb_callback)
 
     train_dataset, eval_dataset = process_dataset(full_dataset, config.dataset, logger)
-    eval_dataset = generate_rejected_responses(eval_dataset, model, tokenizer, config, logger)
+    eval_dataset = generate_rejected_responses(eval_dataset, llm or model, tokenizer, config, logger)
         
     data_collator = DITTODataCollator(
         tokenizer=tokenizer,
@@ -175,6 +176,7 @@ def main(config: DictConfig):
         model=model if not config.trainer.use_vllm else llm,
         lora_adapter_path=lora_adapter_path,
         lora_config=config.lora,
+        logger=logger,
         **config.resample
     )
 
@@ -186,6 +188,7 @@ def main(config: DictConfig):
         model=model if not config.trainer.use_vllm else llm,
         lora_adapter_path=lora_adapter_path,
         lora_config=config.lora,
+        logger=logger,
         **config.resample,
         mode="eval",
     )
