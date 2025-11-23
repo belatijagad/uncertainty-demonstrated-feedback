@@ -26,28 +26,3 @@ HUGGINGFACE_API_KEY=
 WANDB_API_KEY=
 GEMINI_API_KEY=
 ```
-
-## Experiments
-
-To run experiments, simply create a new configurations in `configs` folder, following the structure of `default_{method}.yaml` file. In order to perform experiments with the custom configuration, run the following command
-
-```bash
-# If use vLLM
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
-
-uv run -m scripts/{method}.py --config-name configuration_name \
-    class.param=value
-```
-
-For example,
-
-```bash
-uv run -m scripts/dpo.py --config-name pythia160m_dpo \
-    trainer.epochs=10 optimizer.lr=5e-6
-```
-
-## Running Tests
-
-```bash
-uv run pytest -v
-```
