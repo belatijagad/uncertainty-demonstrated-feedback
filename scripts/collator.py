@@ -21,11 +21,10 @@ from datasets import Dataset, IterableDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from trl.trainer.dpo_trainer import DataCollatorForPreference
 
-from .estimator import BaseEstimator
-from .utils import generate_model_outputs
+from scripts.estimator import BaseEstimator
+from scripts.utils import generate_model_outputs
 
-
-@dataclass
+@dataclass(init=False)
 class DITTOCollator(DataCollatorForPreference):
     frac_expert: float = 0.7
     frac_replay: float = 0.2
@@ -37,8 +36,24 @@ class DITTOCollator(DataCollatorForPreference):
         default_factory=dict, init=False, repr=False
     )
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        *args,
+        frac_expert: float = 0.7,
+        frac_replay: float = 0.2,
+        frac_noisy: float = 0.1,
+        rescale_batch: int = 2,
+        bootstrap_count: int = 10,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
+        self.frac_expert = frac_expert
+        self.frac_replay = frac_replay
+        self.frac_noisy = frac_noisy
+        self.rescale_batch = rescale_batch
+        self.bootstrap_count = bootstrap_count
+        self.cache = {}
+        self.last_sampled_step = 0
 
     def resample(
         self,
@@ -118,13 +133,17 @@ class DITTOCollator(DataCollatorForPreference):
 
     def _get_sampled_triplets(
         self, examples: list[list[int] | Any | dict[str, Any]]
-    ) -> list[list[int] | Any | dict[str, Any]]:
+    ) -> list[list[int] | Any | dict[str, Any]] | None:
         """Contains the core DITTO sampling logic."""
         expert_samples, replay_samples, noisy_samples = [], [], []
 
         for example in examples:
             assert isinstance(example, dict)
-            prompt, chosen = example["prompt"], example["chosen"]
+            prompt = example.get("ditto_prompt") or example.get("prompt")
+            chosen = example.get("ditto_chosen") or example.get("chosen")
+
+            if prompt is None or chosen is None:
+                return None
 
             # 1. Expert pairs (gold chosen vs. latest rejected)
             if (
@@ -147,7 +166,7 @@ class DITTOCollator(DataCollatorForPreference):
                 # Noisy pairs (past rejected vs. older past rejected)
                 noisy_samples.extend(self._get_noisy_pairs(prompt, step_a))
 
-        len_superbatch = len(example) * self.rescale_batch
+        len_superbatch = len(examples) * self.rescale_batch
         noisy_subsample = random.sample(
             noisy_samples,
             min(len(noisy_samples), round(len_superbatch * self.frac_noisy)),
@@ -169,4 +188,6 @@ class DITTOCollator(DataCollatorForPreference):
         if not self.cache:
             return super().torch_call(examples)
         sampled_triplets = self._get_sampled_triplets(examples)
+        if not sampled_triplets:
+            return super().torch_call(examples)
         return super().torch_call(sampled_triplets)

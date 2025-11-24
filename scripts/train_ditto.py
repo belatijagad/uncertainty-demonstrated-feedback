@@ -1,4 +1,6 @@
 import logging
+import sys
+from pathlib import Path
 from typing import cast
 
 import hydra
@@ -12,14 +14,18 @@ from torch.optim import AdamW
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    PreTrainedModel,
     get_scheduler,
 )
-from trl import DPOConfig, DPOTrainer, SFTConfig, SFTTrainer
+from trl import DPOConfig, SFTConfig, SFTTrainer
 
-from .callback import EarlyStoppingCallback, ResampleCallback
-from .collator import DITTOCollator
-from .utils import (
+from scripts.trainer import DITTOTrainer
+
+from scripts.callback import (
+    EarlyStoppingCallback,
+    ResampleCallback,
+)
+from scripts.collator import DITTOCollator
+from scripts.utils import (
     apply_chat_template,
     clone_adapter,
     generate_rejected_responses,
@@ -27,11 +33,13 @@ from .utils import (
     seed_everything,
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
 logger = logging.getLogger(__name__)
 logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
-
-torch.set_float32_matmul_precision("high")
-torch._dynamo.config.capture_scalar_outputs = True
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="ditto")
@@ -50,13 +58,17 @@ def main(config: DictConfig):
 
     model = AutoModelForCausalLM.from_pretrained(
         model_cfg["name_or_path"],
-        attn_implementation=model_cfg.get("attn_implementation"),
+        # attn_implementation=model_cfg.get("attn_implementation"),
         dtype=torch.bfloat16 if model_cfg.get("use_bf16", False) else torch.float32,
     ).to(model_cfg["device"])
     tokenizer = AutoTokenizer.from_pretrained(model_cfg["name_or_path"])
 
     raw_datasets = load_dataset(dataset_cfg["name_or_path"])
     train_dataset, eval_dataset = process_dataset(raw_datasets, dataset_cfg, logger)
+    train_dataset = train_dataset.add_column(
+        "example_id", list(range(len(train_dataset)))
+    )
+    eval_dataset = eval_dataset.add_column("example_id", list(range(len(eval_dataset))))
     eval_dataset = generate_rejected_responses(
         eval_dataset, model, tokenizer, dataset_cfg, logger
     )
@@ -65,7 +77,7 @@ def main(config: DictConfig):
     lora_config = LoraConfig(**lora_cfg, task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ref_model")
     model.set_adapter("ref_model")
-    assert isinstance(model, PreTrainedModel)
+    assert isinstance(model, PeftModel)
 
     collator_kwargs = {
         key: sampler_cfg[key]
@@ -79,8 +91,8 @@ def main(config: DictConfig):
         if key in sampler_cfg
     }
     data_collator = DITTOCollator(
-        tokenizer=tokenizer,
         **collator_kwargs,
+        pad_token_id=tokenizer.pad_token_id,
     )
 
     def _format_example(example):
@@ -151,7 +163,7 @@ def main(config: DictConfig):
             notes=wandb_cfg.get("notes"),
         )
 
-    dpo_trainer = DPOTrainer(
+    dpo_trainer = DITTOTrainer(
         model=model,
         args=dpo_args,
         optimizers=(dpo_optimizer, dpo_scheduler),
@@ -163,7 +175,7 @@ def main(config: DictConfig):
         callbacks=[
             ResampleCallback(
                 model, tokenizer, train_dataset, data_collator, sampler_cfg
-            )
+            ),
         ],
     )
     dpo_trainer.train()

@@ -3,11 +3,11 @@ from typing import Any
 from datasets import Dataset, IterableDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase, TrainerCallback
 
-from .collator import DITTOCollator
+from scripts.collator import DITTOCollator
 
 
 class EarlyStoppingCallback(TrainerCallback):
-    def __init__(self, threshold=1.0):
+    def __init__(self, threshold=2.0):
         self.threshold = threshold
 
     def on_step_begin(self, args, state, control, **kwargs):

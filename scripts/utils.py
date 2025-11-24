@@ -62,6 +62,9 @@ def apply_chat_template(
     if isinstance(chosen_messages, list):
         example["chosen"] = chosen_messages[0]["content"]
 
+    # TRL's SFTTrainer expects a `completion` column (prompt+completion schema).
+    example.setdefault("completion", example["chosen"])
+
     return example
 
 
@@ -78,7 +81,7 @@ def generate_model_outputs(
     inputs = tokenizer(prompts, padding=True, return_tensors="pt").to(model.device)
 
     with torch.inference_mode():
-        assert isinstance(model, GenerationMixin)
+        # assert isinstance(model, GenerationMixin)
         outputs = model.generate(
             **inputs,
             output_scores=True,
@@ -86,7 +89,7 @@ def generate_model_outputs(
             **gen_kwargs,
         )
 
-    assert isinstance(outputs, GenerateDecoderOnlyOutput)
+    # assert isinstance(outputs, GenerateDecoderOnlyOutput)
 
     transition_scores = model.compute_transition_scores(
         outputs.sequences,

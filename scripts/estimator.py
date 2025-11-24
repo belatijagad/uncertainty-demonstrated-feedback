@@ -2,13 +2,16 @@ import torch
 
 
 class BaseEstimator:
+    """Default estimator that returns the summed log-probabilities."""
+
     def __call__(
         self,
         input_text: str,
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
-    ) -> torch.Tensor:
-        return torch.tensor(0.0)
+    ) -> float:
+        # Use summed log-probability as a cheap reward proxy.
+        return float(logprobs.sum().detach().cpu())
 
 
 class RandomEstimator(BaseEstimator):
@@ -38,5 +41,5 @@ class MSP(BaseEstimator):
         input_text: str,
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
-    ) -> torch.Tensor:
-        return logprobs.sum()
+    ) -> float:
+        return float(logprobs.sum().detach().cpu())
