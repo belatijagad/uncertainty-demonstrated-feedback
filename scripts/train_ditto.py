@@ -1,5 +1,6 @@
-import logging
+import gc
 import sys
+import logging
 from pathlib import Path
 from typing import cast
 
@@ -14,9 +15,12 @@ from torch.optim import AdamW
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    get_scheduler,
 )
 from trl import DPOConfig, SFTConfig, SFTTrainer
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.trainer import DITTOTrainer
 
@@ -33,9 +37,6 @@ from scripts.utils import (
     seed_everything,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 logger = logging.getLogger(__name__)
@@ -47,52 +48,29 @@ def main(config: DictConfig):
     load_dotenv()
     seed_everything(config.seed)
 
-    model_cfg = config.model
-    dataset_cfg = config.dataset
-    sampler_cfg = config.sampler
-    wandb_cfg = config.wandb
-    training_cfg = config.training_args
-    lora_cfg = config.lora
-
-    output_dir = config.get("output_dir", "outputs")
-
+    # Prepare model and tokenizer
     model = AutoModelForCausalLM.from_pretrained(
-        model_cfg["name_or_path"],
-        # attn_implementation=model_cfg.get("attn_implementation"),
-        dtype=torch.bfloat16 if model_cfg.get("use_bf16", False) else torch.float32,
-    ).to(model_cfg["device"])
-    tokenizer = AutoTokenizer.from_pretrained(model_cfg["name_or_path"])
+        config.model["name_or_path"],
+        attn_implementation=config.model["attn_implementation"],
+        dtype=torch.bfloat16 if config.model["use_bf16"] else torch.float32,
+    ).to(config.model["device"])
+    lora_config = LoraConfig(**config.lora, task_type=TaskType.CAUSAL_LM)
+    model = get_peft_model(model, lora_config, adapter_name="ref_model")
+    model.set_adapter("ref_model")
+    tokenizer = AutoTokenizer.from_pretrained(config.model["name_or_path"], padding_side="left")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        model.config.pad_token_id = tokenizer.pad_token_id
 
-    raw_datasets = load_dataset(dataset_cfg["name_or_path"])
-    train_dataset, eval_dataset = process_dataset(raw_datasets, dataset_cfg, logger)
+    # Prepare dataset
+    raw_datasets = load_dataset(config.dataset["name_or_path"])
+    train_dataset, eval_dataset = process_dataset(raw_datasets, config.dataset, logger)
     train_dataset = train_dataset.add_column(
         "example_id", list(range(len(train_dataset)))
     )
     eval_dataset = eval_dataset.add_column("example_id", list(range(len(eval_dataset))))
     eval_dataset = generate_rejected_responses(
-        eval_dataset, model, tokenizer, dataset_cfg, logger
-    )
-    assert isinstance(train_dataset, Dataset) and isinstance(eval_dataset, Dataset)
-
-    lora_config = LoraConfig(**lora_cfg, task_type=TaskType.CAUSAL_LM)
-    model = get_peft_model(model, lora_config, adapter_name="ref_model")
-    model.set_adapter("ref_model")
-    assert isinstance(model, PeftModel)
-
-    collator_kwargs = {
-        key: sampler_cfg[key]
-        for key in (
-            "frac_expert",
-            "frac_replay",
-            "frac_noisy",
-            "rescale_batch",
-            "bootstrap_count",
-        )
-        if key in sampler_cfg
-    }
-    data_collator = DITTOCollator(
-        **collator_kwargs,
-        pad_token_id=tokenizer.pad_token_id,
+        eval_dataset, model, tokenizer, config.dataset, logger
     )
 
     def _format_example(example):
@@ -109,72 +87,64 @@ def main(config: DictConfig):
         desc="Applying chat template to eval split",
     )
 
-    sft_args = SFTConfig(
-        output_dir=output_dir,
-        report_to="wandb" if wandb_cfg.get("enabled", False) else "none",
-        chat_template_path=model_cfg["name_or_path"],
-        dataset_text_field="text",
-        **training_cfg,
-    )
-    sft_optimizer = AdamW(model.parameters(), lr=sft_args.learning_rate)
-    sft_scheduler = get_scheduler(
-        name="linear",
-        optimizer=sft_optimizer,
-        num_warmup_steps=sft_args.warmup_steps,
-        num_training_steps=sft_args.max_steps,
-    )
+    if enable_wabdb := config.wandb.pop("enabled"):
+        wandb.init(**config.wandb)
 
-    sft_trainer = SFTTrainer(
+    # Train SFT
+    trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
         train_dataset=sft_train_dataset,
         eval_dataset=sft_eval_dataset,
-        args=sft_args,
-        optimizers=(sft_optimizer, sft_scheduler),
+        args=SFTConfig(
+            output_dir=config.output_dir + "/sft",
+            report_to="wandb" if enable_wabdb else "none",
+            chat_template_path=config.model["name_or_path"],
+            dataset_text_field="text",
+            optimizer_cls_and_kwargs=(),
+            **config.training_args.sft,
+            **config.training_args.general,
+        ),
+        optimizer_cls_and_kwargs=(AdamW, config.optim_args.sft),
         callbacks=[EarlyStoppingCallback(threshold=1.0)],
     )
-    sft_trainer.train()
+    trainer.train()
 
+    del trainer
+    gc.collect()
+
+    # Copy adapter weights for DPO
+    # TODO: how about merging the SFT weights, then reinstatiate LoRA weights on DPO?
+    # https://huggingface.co/docs/peft/en/developer_guides/lora#merge-lora-weights-into-the-base-model
     clone_adapter(cast(PeftModel, model), "ref_model", "policy_model")
     model.set_adapter("policy_model")
 
-    dpo_args = DPOConfig(
-        output_dir=output_dir,
-        report_to="wandb" if wandb_cfg.get("enabled", False) else "none",
-        model_adapter_name="policy_model",
-        ref_adapter_name="ref_model",
-        **training_cfg,
+    # Train DPO
+    data_collator = DITTOCollator(
+        **config.sampler,
+        pad_token_id=tokenizer.pad_token_id,
+        tokenizer=tokenizer,
     )
-    dpo_optimizer = AdamW(model.parameters(), lr=dpo_args.learning_rate)
-    dpo_scheduler = get_scheduler(
-        name="linear",
-        optimizer=dpo_optimizer,
-        num_warmup_steps=dpo_args.warmup_steps,
-        num_training_steps=dpo_args.max_steps,
-    )
-
-    if wandb_cfg.get("enabled", False):
-        wandb.init(
-            project=wandb_cfg.get("project", "ditto"),
-            config=wandb_cfg,
-            name=wandb_cfg.get("name"),
-            group=wandb_cfg.get("group"),
-            tags=wandb_cfg.get("tags"),
-            notes=wandb_cfg.get("notes"),
-        )
 
     dpo_trainer = DITTOTrainer(
         model=model,
-        args=dpo_args,
-        optimizers=(dpo_optimizer, dpo_scheduler),
+        args=DPOConfig(
+            output_dir=config.output_dir + "/dpo",
+            report_to="wandb" if enable_wabdb else "none",
+            model_adapter_name="policy_model",
+            ref_adapter_name="ref_model",
+            optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
+            **config.training_args.dpo,
+            **config.training_args.general,
+        ),
+        optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
         processing_class=tokenizer,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        # eval_dataset=eval_dataset, # TODO: how to make the eval?
         data_collator=data_collator,
-        peft_config=lora_config,
         callbacks=[
             ResampleCallback(
-                model, tokenizer, train_dataset, data_collator, sampler_cfg
+                model, tokenizer, train_dataset, data_collator, config.sampler
             ),
         ],
     )

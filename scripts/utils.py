@@ -7,8 +7,7 @@ import torch
 from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 from omegaconf import DictConfig
 from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict
-from transformers import GenerationMixin, PreTrainedModel, PreTrainedTokenizerBase
-from transformers.generation.utils import GenerateDecoderOnlyOutput
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 
 def seed_everything(seed: int = 42) -> None:
@@ -73,23 +72,17 @@ def generate_model_outputs(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     *,
-    gen_kwargs: dict[str, Any] | None = None,
+    gen_kwargs: dict[str, Any],
 ) -> tuple[list[list[str]], torch.Tensor, torch.Tensor]:
-    gen_kwargs = gen_kwargs or {}
-    num_return_sequences = gen_kwargs.get("num_return_sequences", 1)
-
     inputs = tokenizer(prompts, padding=True, return_tensors="pt").to(model.device)
 
     with torch.inference_mode():
-        # assert isinstance(model, GenerationMixin)
         outputs = model.generate(
             **inputs,
             output_scores=True,
             return_dict_in_generate=True,
             **gen_kwargs,
         )
-
-    # assert isinstance(outputs, GenerateDecoderOnlyOutput)
 
     transition_scores = model.compute_transition_scores(
         outputs.sequences,
@@ -102,16 +95,16 @@ def generate_model_outputs(
 
     batch_size = len(prompts)
     scores_view = transition_scores.contiguous().view(
-        batch_size, num_return_sequences, -1
+        batch_size, gen_kwargs["num_return_sequences"], -1
     )
     sequences_view = (
         outputs.sequences.cpu()
         .contiguous()
-        .view(batch_size, num_return_sequences, outputs.sequences.size(-1))
+        .view(batch_size, gen_kwargs["num_return_sequences"], outputs.sequences.size(-1))
     )
     text_chunks = [
-        decoded_text[i : i + num_return_sequences]
-        for i in range(0, len(decoded_text), num_return_sequences)
+        decoded_text[i : i + gen_kwargs["num_return_sequences"]]
+        for i in range(0, len(decoded_text), gen_kwargs["num_return_sequences"])
     ]
 
     return text_chunks, sequences_view, scores_view
@@ -188,11 +181,7 @@ def generate_rejected_responses(
     """
     logger.info("Generating rejected responses...")
 
-    gen_kwargs = {
-        "num_return_sequences": 1,
-        "do_sample": False,
-        "max_new_tokens": config.max_length // 2,
-    }
+    gen_kwargs = {"num_return_sequences": 1, "do_sample": False, "repetition_penalty": 0.8}
 
     prompts = list(dataset["prompt"])
     text_chunks, _, _ = generate_model_outputs(
