@@ -1,5 +1,4 @@
 import gc
-import os
 import sys
 import logging
 from pathlib import Path
@@ -134,7 +133,7 @@ def main(config: DictConfig):
     trainer = DITTOTrainer(
         model=model,
         args=DPOConfig(
-            output_dir=run_dir + "/dpo",
+            output_dir=run_dir + "/ditto",
             report_to="wandb" if enable_wabdb else "none",
             model_adapter_name="policy_model",
             ref_adapter_name="ref_model",
@@ -156,6 +155,8 @@ def main(config: DictConfig):
     trainer.train()
 
     trainer.save_model()
+
+    trainer.push_to_hub(model_name=f"{config.dataset.name}_{config.dataset.author_id}_{config.model.name}")
 
 if __name__ == "__main__":
     main()

@@ -1,9 +1,14 @@
 seed: 42
 
+hydra:
+  run:
+    dir: outputs/models/${dataset.name}_${dataset.author_id}_${model.name}
+
+
 wandb:
   enabled: true
   project: "sanity-check"
-  name: "SmolLM3-3B_uditto_author0" #"ministral8binstruct_ditto"
+  name: ${dataset.name}_${dataset.author_id}_${model.name}
   group: "ditto"
   tags: ["smollm3", "3b", "author_1", "MSP"]
   notes: "UDITTO MSP training on HuggingFaceTB/SmolLM3-3B" #"DITTO training on Ministral-8B-Instruct-2410"
@@ -22,13 +27,14 @@ lora:
     - up_proj
 
 model:
-  adapter_name: "ditto"
+  name: SmolLM3-3B
   device: "cuda"
   attn_implementation: "sdpa"
   name_or_path: "HuggingFaceTB/SmolLM3-3B"
   use_bf16: true
 
 dataset:
+  name: ccat50
   name_or_path: "belati/ccat50"
   batch_size: 2 # device_batch * rescale_batch = 2 * 2 what is this for?
   max_length: 1024

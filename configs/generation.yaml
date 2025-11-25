@@ -1,0 +1,21 @@
+hydra:
+  job:
+    name: "eval_${dataset.author_id}"
+  run:
+    dir: outputs/generations/${dataset.name}_${dataset.author_id}_${model.name}
+
+dataset:
+  name: ccat50
+  name_or_path: belatijagad/ccat50
+  author_id: 0
+  
+  num_train_samples: 10
+  num_eval_samples: 20
+
+model:
+  name: SmolLM3-3B
+  name_or_path: HuggingFaceTB/SmolLM3-3B
+
+gen_kwargs:
+  do_sample: true
+  num_sequence_generated: 1
