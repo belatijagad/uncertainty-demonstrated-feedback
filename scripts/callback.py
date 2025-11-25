@@ -54,8 +54,6 @@ class ResampleCallback(TrainerCallback):
         if self.last_step_num == step_num:
             return
 
-        print("STARTING EPOCH: " + str(step_num))
-
         if step_num % self.config.get("resample_rate", 50) == 0:
             self.model.train()
             self.collator.resample(
@@ -63,7 +61,6 @@ class ResampleCallback(TrainerCallback):
                 model=self.model,
                 tokenizer=self.tokenizer,
                 dataset=self.dataset,
-                config=self.config,
             )
             self.model.eval()
 

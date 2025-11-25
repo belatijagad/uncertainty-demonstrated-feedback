@@ -43,6 +43,9 @@ class DITTOCollator(DataCollatorForPreference):
         self.cache = {}
         self.last_sampled_step = 0
 
+    def set_mode(self, *, training: bool) -> None:
+        self.mode = "train" if training else "eval"
+
     def resample(
         self,
         step: int,
@@ -83,8 +86,6 @@ class DITTOCollator(DataCollatorForPreference):
                     }
                 )
         
-        print(f"Resampling complete for step {step}. Cache updated.")
-
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -227,14 +228,12 @@ class DITTOCollator(DataCollatorForPreference):
 
     def torch_call(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
         # If cache is empty, just behave like a normal DPO collator
-        if not self.cache:
+        if self.mode == "eval":
             return super().torch_call(examples)
         
         # Get DITTO samples (returns a list of dicts with IDs and Labels)
         sampled_batch = self._get_sampled_triplets(examples)
         
-        # If sampling failed completely, fall back to original examples
-        if not sampled_batch:
-            return super().torch_call(examples)
-            
+        assert sampled_batch
+
         return super().torch_call(sampled_batch)

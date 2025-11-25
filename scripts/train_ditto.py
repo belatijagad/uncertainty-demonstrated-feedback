@@ -1,10 +1,12 @@
 import gc
+import os
 import sys
 import logging
 from pathlib import Path
 from typing import cast
 
 import hydra
+from omegaconf import OmegaConf
 import torch
 import wandb
 from datasets import load_dataset
@@ -16,12 +18,13 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
 )
-from trl import DPOConfig, SFTConfig, DPOTrainer, SFTTrainer
+from trl import DPOConfig, SFTConfig, SFTTrainer
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.trainer import DITTOTrainer
 from scripts.callback import (
     EarlyStoppingCallback,
     ResampleCallback,
@@ -44,7 +47,9 @@ logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
 @hydra.main(version_base=None, config_path="../configs", config_name="ditto")
 def main(config: DictConfig):
     load_dotenv()
-    seed_everything(config.seed)
+    seed_everything(config["seed"])
+
+    run_dir = hydra.core.hydra_config.HydraConfig.get()['runtime']['output_dir']
 
     # Prepare model and tokenizer
     model = AutoModelForCausalLM.from_pretrained(
@@ -52,7 +57,7 @@ def main(config: DictConfig):
         attn_implementation=config.model["attn_implementation"],
         dtype=torch.bfloat16 if config.model["use_bf16"] else torch.float32,
     ).to(config.model["device"])
-    lora_config = LoraConfig(**config.lora, task_type=TaskType.CAUSAL_LM)
+    lora_config = LoraConfig(**OmegaConf.to_container(config.lora, resolve=True), task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ref_model")
     model.set_adapter("ref_model")
     tokenizer = AutoTokenizer.from_pretrained(config.model["name_or_path"], padding_side="left")
@@ -85,7 +90,8 @@ def main(config: DictConfig):
         desc="Applying chat template to eval split",
     )
 
-    if enable_wabdb := config.wandb.pop("enabled"):
+    if enable_wabdb := config.wandb["enabled"]:
+        config.wandb.__delattr__("enabled")
         wandb.init(**config.wandb)
 
     # Train SFT
@@ -95,11 +101,10 @@ def main(config: DictConfig):
         train_dataset=sft_train_dataset,
         eval_dataset=sft_eval_dataset,
         args=SFTConfig(
-            output_dir=config.output_dir + "/sft",
+            output_dir=run_dir + "/sft",
             report_to="wandb" if enable_wabdb else "none",
             chat_template_path=config.model["name_or_path"],
             dataset_text_field="text",
-            optimizer_cls_and_kwargs=(),
             **config.training_args.sft,
             **config.training_args.general,
         ),
@@ -107,6 +112,8 @@ def main(config: DictConfig):
         callbacks=[EarlyStoppingCallback(threshold=1.0)],
     )
     trainer.train()
+
+    trainer.save_model()
 
     del trainer
     gc.collect()
@@ -124,21 +131,21 @@ def main(config: DictConfig):
         tokenizer=tokenizer,
     )
 
-    dpo_trainer = DPOTrainer(
+    trainer = DITTOTrainer(
         model=model,
         args=DPOConfig(
-            output_dir=config.output_dir + "/dpo",
+            output_dir=run_dir + "/dpo",
             report_to="wandb" if enable_wabdb else "none",
             model_adapter_name="policy_model",
             ref_adapter_name="ref_model",
-            optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
             **config.training_args.dpo,
             **config.training_args.general,
         ),
+        # use_cache=not config.training_args.dpo["gradient_checkpointing"],
         optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
         processing_class=tokenizer,
         train_dataset=train_dataset,
-        # eval_dataset=eval_dataset, # TODO: how to make the eval?
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
         callbacks=[
             ResampleCallback(
@@ -146,8 +153,9 @@ def main(config: DictConfig):
             ),
         ],
     )
-    dpo_trainer.train()
+    trainer.train()
 
+    trainer.save_model()
 
 if __name__ == "__main__":
     main()

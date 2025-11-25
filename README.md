@@ -13,10 +13,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Create the virtual environment using `uv` and install the project dependencies.
 
 ```bash
-uv venv -p 3.13
+uv venv -p 3.12
 source .venv/bin/activate
 uv sync
-uv pip install -e .
 ```
 
 Create `.env` to store token credentials for `huggingface_hub` and `wandb`
