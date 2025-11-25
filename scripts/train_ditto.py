@@ -36,6 +36,7 @@ from scripts.utils import (
     process_dataset,
     seed_everything,
 )
+from scripts.estimator import RandomEstimator, MSP
 
 
 
@@ -59,7 +60,7 @@ def main(config: DictConfig):
     lora_config = LoraConfig(**OmegaConf.to_container(config.lora, resolve=True), task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ref_model")
     model.set_adapter("ref_model")
-    tokenizer = AutoTokenizer.from_pretrained(config.model["name_or_path"], padding_side="left")
+    tokenizer = AutoTokenizer.from_pretrained(config.model["name_or_path"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.pad_token_id
@@ -94,6 +95,7 @@ def main(config: DictConfig):
         wandb.init(**config.wandb)
 
     # Train SFT
+    tokenizer.padding_side = "right"
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
@@ -112,8 +114,6 @@ def main(config: DictConfig):
     )
     trainer.train()
 
-    trainer.save_model()
-
     del trainer
     gc.collect()
 
@@ -124,12 +124,20 @@ def main(config: DictConfig):
     model.set_adapter("policy_model")
 
     # Train DPO
+    # TODO: make a cleaner implementation of mapping estimators
+    estimator_map = {
+        None: None,
+        "None": None,
+        "msp": MSP(),
+        "random": RandomEstimator(),
+    }
     data_collator = DITTOCollator(
         **config.sampler,
         pad_token_id=tokenizer.pad_token_id,
         tokenizer=tokenizer,
+        estimator=estimator_map[config.estimator],
     )
-
+    tokenizer.padding_side = "left"
     trainer = DITTOTrainer(
         model=model,
         args=DPOConfig(
@@ -156,7 +164,7 @@ def main(config: DictConfig):
 
     trainer.save_model()
 
-    trainer.push_to_hub(model_name=f"{config.dataset.name}_{config.dataset.author_id}_{config.model.name}")
+    # trainer.push_to_hub(model_id=f"{config.dataset.name}_{config.dataset.author_id}_{config.model.name}")
 
 if __name__ == "__main__":
     main()

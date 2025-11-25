@@ -2,13 +2,13 @@ seed: 42
 
 hydra:
   run:
-    dir: outputs/models/${dataset.name}_${dataset.author_id}_${model.name}
+    dir: outputs/models/${dataset.name}_${dataset.author_id}_${model.name}_${estimator}
 
 
 wandb:
   enabled: true
-  project: "sanity-check"
-  name: ${dataset.name}_${dataset.author_id}_${model.name}
+  project: "uditto"
+  name: ${dataset.name}_${dataset.author_id}_${model.name}_${estimator}
   group: "ditto"
   tags: ["smollm3", "3b", "author_1", "MSP"]
   notes: "UDITTO MSP training on HuggingFaceTB/SmolLM3-3B" #"DITTO training on Ministral-8B-Instruct-2410"
@@ -27,10 +27,10 @@ lora:
     - up_proj
 
 model:
-  name: SmolLM3-3B
+  name: Ministral-8B-Instruct-2410
   device: "cuda"
   attn_implementation: "sdpa"
-  name_or_path: "HuggingFaceTB/SmolLM3-3B"
+  name_or_path: "mistralai/Ministral-8B-Instruct-2410"
   use_bf16: true
 
 dataset:
@@ -53,7 +53,7 @@ training_args:
     per_device_train_batch_size: 4
   dpo:
     warmup_steps: 10
-    max_steps: 100
+    max_steps: 50
     max_length: 1024
     max_prompt_length: 512
     max_completion_length: 512
@@ -62,11 +62,11 @@ training_args:
 
 optim_args:
   sft:
-    lr: 2.0e-3 # x10 because of LoRA
-    weight_decay: 0.01
+    lr: 2.0e-4 # x10 because of LoRA
+    weight_decay: 0
   dpo:
     lr: 5.0e-5 # x10 because of LoRA
-    weight_decay: 0.01
+    weight_decay: 0
 
 sampler:
   resample_rate: 10
@@ -76,5 +76,8 @@ sampler:
   rescale_batch: 2
 
   gen_kwargs:
+    do_sample: true
     num_return_sequences: 10
-    repetition_penalty: 0.8
+    repetition_penalty: 1.2
+
+estimator: msp # Random, MSP, "None"

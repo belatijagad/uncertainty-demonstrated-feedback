@@ -83,6 +83,9 @@ def generate_model_outputs(
             return_dict_in_generate=True,
             **gen_kwargs,
         )
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     transition_scores = model.compute_transition_scores(
         outputs.sequences,

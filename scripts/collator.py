@@ -10,7 +10,6 @@ from datasets import Dataset, IterableDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from trl.trainer.dpo_trainer import DataCollatorForPreference
 
-from scripts.estimator import BaseEstimator
 from scripts.utils import generate_model_outputs
 
 @dataclass
@@ -36,6 +35,7 @@ class DITTOCollator(DataCollatorForPreference):
         self.rescale_batch = kwargs.pop("rescale_batch", 2)
         self.tokenizer = kwargs.pop("tokenizer")
         self.resample_rate = kwargs.pop("resample_rate")
+        self.estimator = kwargs.pop("estimator")
         self.gen_kwargs = kwargs.pop("gen_kwargs")
         
         super().__init__(*args, **kwargs)
@@ -52,7 +52,6 @@ class DITTOCollator(DataCollatorForPreference):
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizerBase,
         dataset: Dataset | IterableDataset,
-        estimator: BaseEstimator | None = None,
     ) -> None:
         """
         Generates new responses from the model and updates the cache.
@@ -60,7 +59,6 @@ class DITTOCollator(DataCollatorForPreference):
         self.last_sampled_step = step
         self.cache.setdefault(step, {})
 
-        estimator = estimator or BaseEstimator()
         prompts = list(dataset["prompt"])
         
         text_chunks, sequences_view, scores_view = generate_model_outputs(
@@ -82,7 +80,7 @@ class DITTOCollator(DataCollatorForPreference):
                 cache_slot.append(
                     {
                         "generated_text": text,
-                        "score": estimator(text, seq, score_seq),
+                        "score": self.estimator(text, seq, score_seq),
                     }
                 )
         

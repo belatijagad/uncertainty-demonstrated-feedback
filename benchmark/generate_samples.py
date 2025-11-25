@@ -59,56 +59,88 @@ def generate_results(
     examples: list[dict[str, Any]],
     gen_kwargs: dict[str, Any],
     method_name: Literal["zero_shot", "few_shot", "sft", "ditto"],
+    base_dir: str,
 ) -> None:
     responses_dict = {
         "prompt": [],
         "completion": [],
     }
 
-    prompts_to_use = []
+    model_inputs = []
+    csv_prompts = []
+    decoded_prefixes = [] 
 
+    # --- 1. Prepare Inputs (Same as before) ---
+    
     if method_name == "zero_shot":
-        prompts_to_use = prompts
+        model_inputs = prompts
+        csv_prompts = prompts
+        
     elif method_name == "few_shot":
-        formatted_examples: list[str] = []
-
+        # ... (Same few-shot construction logic) ...
+        formatted_examples = []
         for example in examples:
-            prompt_text = example.get("prompt")
-            completion_text = example.get("chosen")
-            formatted_examples.append(
-                f"Prompt:\n{prompt_text}\n\nCompletion:\n{completion_text}"
-            )
-
+            formatted_examples.append(f"Prompt:\n{example.get('prompt')}\n\nCompletion:\n{example.get('chosen')}")
         few_shot_context = "\n\n".join(formatted_examples)
-        prompts_to_use = [
-            f"{few_shot_context}\n\nPrompt:\n{prompt}\n\nCompletion:"
-            for prompt in prompts
-        ]
+        
+        model_inputs = [f"{few_shot_context}\n\nPrompt:\n{p}\n\nCompletion:" for p in prompts]
+        csv_prompts = prompts
+
     elif method_name in ["sft", "ditto"]:
+        csv_prompts = prompts 
         for p in prompts:
             messages = [{"role": "user", "content": p}]
-            
-            formatted = tokenizer.apply_chat_template(
-                messages, 
-                tokenize=False, 
-                add_generation_prompt=True
-            )
-            prompts_to_use.append(formatted)
+            formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            model_inputs.append(formatted)
 
-    text_chunks, _, _ = generate_model_outputs(
-        prompts_to_use,
-        model,
-        tokenizer,
-        gen_kwargs=gen_kwargs,
-    )
+    # Calculate prefixes for stripping later
+    for inp in model_inputs:
+        temp_ids = tokenizer(inp, add_special_tokens=False)["input_ids"]
+        prefix = tokenizer.decode(temp_ids, skip_special_tokens=True)
+        decoded_prefixes.append(prefix)
 
-    for prompt_text, generations in zip(prompts_to_use, text_chunks, strict=True):
-        responses_dict["prompt"].append(prompt_text)
-        completion_text = generations[0] if generations else ""
-        responses_dict["completion"].append(completion_text)
+    # --- 2. Generate with CLIENT-SIDE BATCHING (The Fix) ---
+    
+    # Extract batch size (default to 1 to be safe on 8B models)
+    # We use .pop() so we don't pass 'batch_size' into the HF generate function
+    batch_size = gen_kwargs.pop("batch_size", 1) 
+    
+    all_text_chunks = []
 
+    # Loop through the inputs in steps of 'batch_size'
+    for i in range(0, len(model_inputs), batch_size):
+        # Slice the list
+        batch_inputs = model_inputs[i : i + batch_size]
+        
+        # Call your UNCHANGED utility function with the smaller list
+        batch_chunks, _, _ = generate_model_outputs(
+            batch_inputs,
+            model,
+            tokenizer,
+            gen_kwargs=gen_kwargs,
+        )
+        
+        # Accumulate the text results
+        all_text_chunks.extend(batch_chunks)
+        
+    # --- 3. Save & Cleanup (Use all_text_chunks) ---
+    
+    for raw_prompt, prefix, generations in zip(csv_prompts, decoded_prefixes, all_text_chunks, strict=True):
+        responses_dict["prompt"].append(raw_prompt)
+        
+        full_generation = generations[0] if generations else ""
+        
+        if full_generation.startswith(prefix):
+            clean_completion = full_generation[len(prefix):]
+        else:
+            clean_completion = full_generation
+
+        responses_dict["completion"].append(clean_completion.strip())
+
+    # --- 4. Write ---
     responses = pd.DataFrame.from_dict(responses_dict)
-    responses.to_csv(f"{method_name}.csv", index=False)
+    os.makedirs(base_dir, exist_ok=True)
+    responses.to_csv(f"{base_dir}/{method_name}.csv", index=False)
 
 @hydra.main(version_base=None, config_path="../configs", config_name="generation")
 def main(config: DictConfig):
@@ -117,9 +149,11 @@ def main(config: DictConfig):
 
     relative_checkpoint_dir = os.path.join(
         config.checkpoints.base_dir, 
-        config.checkpoints.run_name
+        config.checkpoints.run_name,
+        "ditto"
     )
     checkpoint_dir = hydra.utils.to_absolute_path(relative_checkpoint_dir)
+    output_dir = hydra.utils.to_absolute_path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
 
     dataset_config = OmegaConf.to_container(config.dataset, resolve=True)
     generation_config = OmegaConf.to_container(config.gen_kwargs, resolve=True)
@@ -131,25 +165,30 @@ def main(config: DictConfig):
     examples, prompts = process_dataset(dataset, dataset_config)
 
     # Generate zero-shot and few-shot completions
-    model = AutoModelForCausalLM.from_pretrained(config.model.name_or_path).to(config["device"])
+    model = AutoModelForCausalLM.from_pretrained(config.model.name_or_path).to(config.model["device"])
     tokenizer = AutoTokenizer.from_pretrained(config.model.name_or_path)
-    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="zero_shot")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        model.config.pad_token_id = tokenizer.pad_token_id
+
+    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="zero_shot", base_dir=output_dir)
     logger.info("-> Finished generating zero shot generations.")
-    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="zero_shot")
+    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="few_shot", base_dir=output_dir)
     logger.info("-> Finished generating few shot generations.")
 
     # Generate SFT and DITTO completions
     model = PeftModel.from_pretrained(
         model=model, 
-        model_id=checkpoint_dir, 
-        adapter_name="sft", 
+        model_id=checkpoint_dir + "/ref_model", 
+        adapter_name="ref_model", 
         is_trainable=False,
-    ).to(config["device"])
-    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="sft")
+    ).to(config.model["device"])
+    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="sft", base_dir=output_dir)
     logger.info("-> Finished generating SFT generations.")
 
-    model.set_adapter("ditto")
-    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="ditto")
+    model.load_adapter(checkpoint_dir + "/policy_model", adapter_name="policy_model")
+    model.set_adapter("policy_model")
+    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="ditto", base_dir=output_dir)
     logger.info("-> Finished generating DITTO generations.")
 
 if __name__ == "__main__":
