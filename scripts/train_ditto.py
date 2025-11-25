@@ -7,7 +7,7 @@ from typing import cast
 import hydra
 import torch
 import wandb
-from datasets import Dataset, load_dataset
+from datasets import load_dataset
 from dotenv import load_dotenv
 from omegaconf import DictConfig
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
@@ -16,13 +16,11 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
 )
-from trl import DPOConfig, SFTConfig, SFTTrainer
+from trl import DPOConfig, SFTConfig, DPOTrainer, SFTTrainer
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-from scripts.trainer import DITTOTrainer
 
 from scripts.callback import (
     EarlyStoppingCallback,
@@ -126,7 +124,7 @@ def main(config: DictConfig):
         tokenizer=tokenizer,
     )
 
-    dpo_trainer = DITTOTrainer(
+    dpo_trainer = DPOTrainer(
         model=model,
         args=DPOConfig(
             output_dir=config.output_dir + "/dpo",
