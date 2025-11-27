@@ -24,6 +24,7 @@ dependencies = [
     "ipykernel>=7.0.1",
     "numpy>=2.2.6",
     "trl>=0.25.1",
+    "pydantic>=2.12.4",
 ]
 
 [tool.uv.sources]

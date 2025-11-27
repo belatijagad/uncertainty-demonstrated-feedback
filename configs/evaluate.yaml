@@ -1,0 +1,6 @@
+hydra:
+  run:
+    dir: outputs/evaluations
+
+model_name: gemini-2.5-flash
+batch_display_name: evaluate
