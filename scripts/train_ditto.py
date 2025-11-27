@@ -102,7 +102,7 @@ def main(config: DictConfig):
         train_dataset=sft_train_dataset,
         eval_dataset=sft_eval_dataset,
         args=SFTConfig(
-            output_dir=run_dir + "/sft",
+            output_dir=run_dir,
             report_to="wandb" if enable_wabdb else "none",
             chat_template_path=config.model["name_or_path"],
             dataset_text_field="text",
@@ -141,7 +141,7 @@ def main(config: DictConfig):
     trainer = DITTOTrainer(
         model=model,
         args=DPOConfig(
-            output_dir=run_dir + "/ditto",
+            output_dir=run_dir,
             report_to="wandb" if enable_wabdb else "none",
             model_adapter_name="policy_model",
             ref_adapter_name="ref_model",
@@ -164,6 +164,7 @@ def main(config: DictConfig):
 
     trainer.save_model()
 
+    # TODO: How to push model with customized `repo_id`?
     # trainer.push_to_hub(model_id=f"{config.dataset.name}_{config.dataset.author_id}_{config.model.name}")
 
 if __name__ == "__main__":

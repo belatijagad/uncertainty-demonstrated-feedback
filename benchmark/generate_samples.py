@@ -24,41 +24,73 @@ generate_model_outputs = utils_module.generate_model_outputs
 logger = logging.getLogger(__name__)
 logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
 
+import random
+from typing import Any
+from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
+
 def process_dataset(
     dataset: DatasetDict | Dataset | IterableDatasetDict | IterableDataset,
     dataset_kwargs: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    train_split = dataset["train"]
-
+    
     author_id = dataset_kwargs["author_id"]
     n_train = dataset_kwargs["num_train_samples"]
     n_eval = dataset_kwargs["num_eval_samples"]
+    target_eval_split = dataset_kwargs["eval_split"]
 
-    author_rows: list[dict[str, Any]] = [
-        example for example in train_split if example.get("author_id") == author_id
+    train_data = dataset["train"]
+    train_rows: list[dict[str, Any]] = [
+        example for example in train_data if example.get("author_id") == author_id
     ]
+    
+    assert train_rows, f"No rows found for author {author_id} in 'train' split."
+    random.shuffle(train_rows)
+    
+    examples = train_rows[:n_train]
 
-    assert author_rows
+    eval_candidates_rows = []
 
-    random.shuffle(author_rows)
+    if target_eval_split == "train":
+        eval_candidates_rows = train_rows[n_train:]
+    else:
+        if target_eval_split not in dataset:
+            raise ValueError(f"Split '{target_eval_split}' not found in dataset.")
+            
+        eval_data = dataset[target_eval_split]
+        eval_rows: list[dict[str, Any]] = [
+            example for example in eval_data if example.get("author_id") == author_id
+        ]
+        
+        assert eval_rows, f"No rows found for author {author_id} in '{target_eval_split}' split."
+        random.shuffle(eval_rows)
+        eval_candidates_rows = eval_rows
 
-    examples = author_rows[:n_train]
-    eval_candidates = author_rows[n_train:n_train+n_eval]
+    final_eval_selection = eval_candidates_rows[:n_eval]
 
     prompts: list[str] = []
-    for example in eval_candidates[:n_eval]:
+    for example in final_eval_selection:
         prompts.append(str(example.get("prompt")))
 
     return examples, prompts
 
+def generate_examples(
+    dataset: DatasetDict | Dataset | IterableDatasetDict | IterableDataset, 
+    dataset_kwargs: dict[str, Any],
+    base_dir: str,
+) -> None:
+    assert dataset_kwargs["eval_split"] != "train", "Doesn't support `train` split currently."
+    example_dataset = dataset[dataset_kwargs["eval_split"]].to_pandas()
+    os.makedirs(base_dir, exist_ok=True)
+    example_dataset.to_csv(base_dir + f"{dataset_kwargs.name}_{dataset_kwargs.author_id}", index=False)
+
 
 def generate_results(
-    model: PreTrainedModel | PeftModel, 
+    model: PreTrainedModel, 
     tokenizer: PreTrainedTokenizer, 
     prompts: list[str],
     examples: list[dict[str, Any]],
     gen_kwargs: dict[str, Any],
-    method_name: Literal["zero_shot", "few_shot", "sft", "ditto"],
+    method_name: Literal["zero-shot", "few-shot", "sft", "ditto"],
     base_dir: str,
 ) -> None:
     responses_dict = {
@@ -70,14 +102,14 @@ def generate_results(
     csv_prompts = []
     decoded_prefixes = [] 
 
-    # --- 1. Prepare Inputs (Same as before) ---
-    
-    if method_name == "zero_shot":
+    gen_kwargs = gen_kwargs.copy()
+    batch_size = gen_kwargs.pop("batch_size", 1) 
+
+    if method_name == "zero-shot":
         model_inputs = prompts
         csv_prompts = prompts
         
-    elif method_name == "few_shot":
-        # ... (Same few-shot construction logic) ...
+    elif method_name == "few-shot":
         formatted_examples = []
         for example in examples:
             formatted_examples.append(f"Prompt:\n{example.get('prompt')}\n\nCompletion:\n{example.get('chosen')}")
@@ -93,40 +125,27 @@ def generate_results(
             formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             model_inputs.append(formatted)
 
-    # Calculate prefixes for stripping later
     for inp in model_inputs:
         temp_ids = tokenizer(inp, add_special_tokens=False)["input_ids"]
         prefix = tokenizer.decode(temp_ids, skip_special_tokens=True)
         decoded_prefixes.append(prefix)
 
-    # --- 2. Generate with CLIENT-SIDE BATCHING (The Fix) ---
-    
-    # Extract batch size (default to 1 to be safe on 8B models)
-    # We use .pop() so we don't pass 'batch_size' into the HF generate function
-    batch_size = gen_kwargs.pop("batch_size", 1) 
-    
     all_text_chunks = []
 
-    # Loop through the inputs in steps of 'batch_size'
     for i in range(0, len(model_inputs), batch_size):
-        # Slice the list
         batch_inputs = model_inputs[i : i + batch_size]
         
-        # Call your UNCHANGED utility function with the smaller list
         batch_chunks, _, _ = generate_model_outputs(
             batch_inputs,
             model,
             tokenizer,
             gen_kwargs=gen_kwargs,
         )
-        
-        # Accumulate the text results
         all_text_chunks.extend(batch_chunks)
-        
-    # --- 3. Save & Cleanup (Use all_text_chunks) ---
-    
+            
     for raw_prompt, prefix, generations in zip(csv_prompts, decoded_prefixes, all_text_chunks, strict=True):
-        responses_dict["prompt"].append(raw_prompt)
+        clean_prompt = raw_prompt.replace('\n', '\\n')
+        responses_dict["prompt"].append(clean_prompt)
         
         full_generation = generations[0] if generations else ""
         
@@ -135,12 +154,14 @@ def generate_results(
         else:
             clean_completion = full_generation
 
-        responses_dict["completion"].append(clean_completion.strip())
+        clean_completion = clean_completion.strip().replace('\n', '\\n')
 
-    # --- 4. Write ---
+        responses_dict["completion"].append(clean_completion)
+
     responses = pd.DataFrame.from_dict(responses_dict)
     os.makedirs(base_dir, exist_ok=True)
     responses.to_csv(f"{base_dir}/{method_name}.csv", index=False)
+
 
 @hydra.main(version_base=None, config_path="../configs", config_name="generation")
 def main(config: DictConfig):
@@ -164,6 +185,9 @@ def main(config: DictConfig):
     dataset = load_dataset(dataset_config["name_or_path"])
     examples, prompts = process_dataset(dataset, dataset_config)
 
+    # Generate examples
+    generate_examples(dataset, dataset_config)
+
     # Generate zero-shot and few-shot completions
     model = AutoModelForCausalLM.from_pretrained(config.model.name_or_path).to(config.model["device"])
     tokenizer = AutoTokenizer.from_pretrained(config.model.name_or_path)
@@ -171,10 +195,11 @@ def main(config: DictConfig):
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.pad_token_id
 
-    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="zero_shot", base_dir=output_dir)
-    logger.info("-> Finished generating zero shot generations.")
-    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="few_shot", base_dir=output_dir)
-    logger.info("-> Finished generating few shot generations.")
+    if config.estimator not in ["msp", "None", None]:
+        generate_results(model, tokenizer, prompts, examples, generation_config, method_name="zero-shot", base_dir=output_dir)
+        logger.info("-> Finished generating zero shot generations.")
+        generate_results(model, tokenizer, prompts, examples, generation_config, method_name="few-shot", base_dir=output_dir)
+        logger.info("-> Finished generating few shot generations.")
 
     # Generate SFT and DITTO completions
     model = PeftModel.from_pretrained(
@@ -183,8 +208,9 @@ def main(config: DictConfig):
         adapter_name="ref_model", 
         is_trainable=False,
     ).to(config.model["device"])
-    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="sft", base_dir=output_dir)
-    logger.info("-> Finished generating SFT generations.")
+    if config.estimator not in ["msp", "None", None]:
+        generate_results(model, tokenizer, prompts, examples, generation_config, method_name="sft", base_dir=output_dir)
+        logger.info("-> Finished generating SFT generations.")
 
     model.load_adapter(checkpoint_dir + "/policy_model", adapter_name="policy_model")
     model.set_adapter("policy_model")
