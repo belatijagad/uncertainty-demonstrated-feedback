@@ -34,18 +34,18 @@ The output directory will be structured this way.
 outputs/
 ├── models/
 │   └── {dataset}_{author_id}_{model name}/
-│       ├── sft/
-│       │   └── ... weights
-│       └── ditto/
-│           └── ... weights
+│       ├── ref_model
+│       └── policy_model
 ├── generations/
-│   └── {dataset}_{author_id}_{model_name}/
-│       ├── zero_shot.csv
-│       ├── few_shots.csv
-│       ├── sft.csv
-│       └── ditto.csv
+│   ├── {dataset}_{author_id}_{model_name}/
+│   │   ├── zero_shot.csv
+│   │   ├── few_shots.csv
+│   │   ├── sft.csv
+│   │   └── dpo.csv
+│   └── examples/
+│       └── {dataset}_{author_id}_{model_name}.csv
 └── evals/
-    └── evals.csv # TODO: finalize evals directory
+    └── evals.csv # TODO: finalize
 ```
 
 ```csv
@@ -61,6 +61,13 @@ uv run scripts/train_ditto.py \
 
 It will save the model.
 
+```bash
+models/
+└── {dataset}_{author_id}_{model name}/
+    ├── ref_model
+    └── policy_model
+```
+
 
 ### Evaluation
 
@@ -68,6 +75,15 @@ Generate the responses for evaluation
 
 ```bash
 uv run generate_samples.py
+```
+
+```bash
+generations/
+└── {dataset}_{author_id}_{model_name}/
+    ├── zero_shot.csv
+    ├── few_shots.csv
+    ├── sft.csv
+    └── dpo.csv
 ```
 
 Score the results using LLM judge
