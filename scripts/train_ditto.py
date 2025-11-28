@@ -117,6 +117,9 @@ def main(config: DictConfig):
     del trainer
     gc.collect()
 
+    # TODO: make it to test all adapters at once; so the adapter name would be the method name
+    # e.g., none, msp, random
+
     # Copy adapter weights for DPO
     # TODO: how about merging the SFT weights, then reinstatiate LoRA weights on DPO?
     # https://huggingface.co/docs/peft/en/developer_guides/lora#merge-lora-weights-into-the-base-model
@@ -167,4 +170,5 @@ def main(config: DictConfig):
     trainer.save_model()
 
 if __name__ == "__main__":
+    # TODO: make sweep version to test different models, dataset and authorid, and estimator
     main()

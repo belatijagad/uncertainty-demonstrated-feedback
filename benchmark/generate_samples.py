@@ -80,8 +80,9 @@ def generate_examples(
 ) -> None:
     assert dataset_kwargs["eval_split"] != "train", "Doesn't support `train` split currently."
     example_dataset = dataset[dataset_kwargs["eval_split"]].to_pandas()
-    os.makedirs(base_dir, exist_ok=True)
-    example_dataset.to_csv(base_dir + f"{dataset_kwargs.name}_{dataset_kwargs.author_id}", index=False)
+    example_dataset = example_dataset.loc[example_dataset.author_id == dataset_kwargs["author_id"]]
+    os.makedirs(base_dir+"/examples", exist_ok=True)
+    example_dataset.to_csv(base_dir + "/examples/" + f"{dataset_kwargs["name"]}_{dataset_kwargs["author_id"]}.csv", index=False)
 
 
 def generate_results(
@@ -171,7 +172,6 @@ def main(config: DictConfig):
     relative_checkpoint_dir = os.path.join(
         config.checkpoints.base_dir, 
         config.checkpoints.run_name,
-        "ditto"
     )
     checkpoint_dir = hydra.utils.to_absolute_path(relative_checkpoint_dir)
     output_dir = hydra.utils.to_absolute_path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
@@ -186,16 +186,16 @@ def main(config: DictConfig):
     examples, prompts = process_dataset(dataset, dataset_config)
 
     # Generate examples
-    generate_examples(dataset, dataset_config)
+    generate_examples(dataset, dataset_config, base_dir=str(Path(output_dir).parent))
 
     # Generate zero-shot and few-shot completions
     model = AutoModelForCausalLM.from_pretrained(config.model.name_or_path).to(config.model["device"])
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(relative_checkpoint_dir)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.pad_token_id
 
-    if config.estimator not in ["msp", "None", None]:
+    if config.estimator in ["None", None]:
         generate_results(model, tokenizer, prompts, examples, generation_config, method_name="zero-shot", base_dir=output_dir)
         logger.info("-> Finished generating zero shot generations.")
         generate_results(model, tokenizer, prompts, examples, generation_config, method_name="few-shot", base_dir=output_dir)
@@ -208,7 +208,7 @@ def main(config: DictConfig):
         adapter_name="ref_model", 
         is_trainable=False,
     ).to(config.model["device"])
-    if config.estimator not in ["msp", "None", None]:
+    if config.estimator in ["None", None]:
         generate_results(model, tokenizer, prompts, examples, generation_config, method_name="sft", base_dir=output_dir)
         logger.info("-> Finished generating SFT generations.")
 
@@ -218,4 +218,5 @@ def main(config: DictConfig):
     logger.info("-> Finished generating DITTO generations.")
 
 if __name__ == "__main__":
+    # TODO: make sweep version to inference models, dataset and authorid, and estimator
     main()

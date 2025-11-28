@@ -10,8 +10,7 @@ class BaseEstimator:
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
     ) -> float:
-        # Use summed log-probability as a cheap reward proxy.
-        return float(logprobs.sum().detach().cpu())
+        return 0.0
 
 
 class RandomEstimator(BaseEstimator):

@@ -192,8 +192,8 @@ def main(config: DictConfig):
     os.environ["api_key"] = os.environ.get("GEMINI_API_KEY")
     logger.info("=>> Starting the evaluation process...")
     logger.info(f"Model for evaluation: {config.model_name}")
-    # data = aggregate_responses()
-    # create_jsonl(data, config)
+    data = aggregate_responses()
+    create_jsonl(data, config)
     create_batch_request(config)
 
 

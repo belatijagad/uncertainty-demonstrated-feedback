@@ -1,4 +1,4 @@
-# @package _group_
+# @package model
 name: Ministral-8B-Instruct-2410
 device: "cuda"
 attn_implementation: "sdpa"

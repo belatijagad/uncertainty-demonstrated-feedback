@@ -35,7 +35,7 @@ outputs/
 ├── models/
 │   └── {dataset}_{author_id}_{model name}/
 │       ├── ref_model
-│       └── policy_model
+│       └── {method_name}_model
 ├── generations/
 │   ├── {dataset}_{author_id}_{model_name}/
 │   │   ├── zero_shot.csv
@@ -45,11 +45,11 @@ outputs/
 │   └── examples/
 │       └── {dataset}_{author_id}_{model_name}.csv
 └── evals/
-    └── evals.csv # TODO: finalize
-```
-
-```csv
-
+    ├── comparisons.json
+    ├── batch-request.jsonl
+    ├── batch-results.json
+    ├── match_statistics.json
+    └── winrate.json
 ```
 
 ### Training
@@ -65,7 +65,7 @@ It will save the model.
 models/
 └── {dataset}_{author_id}_{model name}/
     ├── ref_model
-    └── policy_model
+    └── {method_name}_model
 ```
 
 
@@ -79,15 +79,27 @@ uv run generate_samples.py
 
 ```bash
 generations/
-└── {dataset}_{author_id}_{model_name}/
-    ├── zero_shot.csv
-    ├── few_shots.csv
-    ├── sft.csv
-    └── dpo.csv
+├── {dataset}_{author_id}_{model_name}/
+│   ├── zero_shot.csv
+│   ├── few_shots.csv
+│   ├── sft.csv
+│   └── ditto.csv
+└── examples/
+    └── {dataset}_{author_id}_{model_name}.csv
 ```
 
 Score the results using LLM judge
 
 ```bash
 uv run evaluate.py
+```
+
+
+```bash
+evals/
+├── comparisons.json
+├── batch-request.jsonl
+├── batch-results.json
+├── match_statistics.json
+└── winrate.json
 ```
