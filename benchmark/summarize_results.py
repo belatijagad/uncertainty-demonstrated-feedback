@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 import hydra
 from google import genai
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_PATH = ROOT / "outputs" / "evaluations"

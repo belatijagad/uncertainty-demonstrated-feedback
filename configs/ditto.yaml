@@ -6,16 +6,16 @@ seed: 42
 
 hydra:
   run:
-    dir: outputs/models/${dataset.name}_${dataset.author_id}_${model.name}_${estimator}
-
+    dir: outputs/models/${dataset.name}_${dataset.author_id}_${model.name}
+  sweep:
+    dir: output/models
+    subdir: ${dataset.name}_${dataset.author_id}_${model.name}
 
 wandb:
   enabled: true
   project: "uditto"
-  name: ${dataset.name}_${dataset.author_id}_${model.name}_${estimator}
+  name: ${dataset.name}_${dataset.author_id}_${model.name}
   group: "ditto"
-  tags: ["smollm3", "3b", "author_1", "MSP"]
-  notes: "UDITTO MSP training on HuggingFaceTB/SmolLM3-3B" #"DITTO training on Ministral-8B-Instruct-2410"
 
 lora:
   r: 16
@@ -77,5 +77,4 @@ sampler:
     num_return_sequences: 10
     repetition_penalty: 1.2
 
-estimator: msp # Random, MSP, "None"
 push_to_hub: true

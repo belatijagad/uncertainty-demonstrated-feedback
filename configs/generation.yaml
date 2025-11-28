@@ -5,10 +5,11 @@ defaults:
 seed: 42
 
 hydra:
-  job:
-    name: "eval_${dataset.author_id}"
   run:
-    dir: outputs/generations/${dataset.name}_${dataset.author_id}_${model.name}_${estimator}
+    dir: outputs/models/${dataset.name}_${dataset.author_id}_${model.name}
+  sweep:
+    dir: output/models
+    subdir: ${dataset.name}_${dataset.author_id}_${model.name}
 
 checkpoints:
   base_dir: outputs/models
@@ -29,5 +30,3 @@ gen_kwargs:
   num_return_sequences: 1
   max_new_tokens: 1024
   repetition_penalty: 1.2
-
-estimator: msp # msp, random, "None"

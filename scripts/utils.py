@@ -84,6 +84,8 @@ def generate_model_outputs(
             **gen_kwargs,
         )
     
+    raw_logits = torch.stack(outputs.scores, dim=-1).cpu()
+    
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -105,12 +107,15 @@ def generate_model_outputs(
         .contiguous()
         .view(batch_size, gen_kwargs["num_return_sequences"], outputs.sequences.size(-1))
     )
+    logits_view = raw_logits.contiguous().view(
+        batch_size, gen_kwargs["num_return_sequences"], -1, raw_logits.size(-1)
+    )
     text_chunks = [
         decoded_text[i : i + gen_kwargs["num_return_sequences"]]
         for i in range(0, len(decoded_text), gen_kwargs["num_return_sequences"])
     ]
 
-    return text_chunks, sequences_view, scores_view
+    return text_chunks, sequences_view, scores_view, logits_view
 
 
 def process_dataset(

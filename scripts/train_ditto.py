@@ -36,7 +36,7 @@ from scripts.utils import (
     process_dataset,
     seed_everything,
 )
-from scripts.estimator import RandomEstimator, MSP
+from scripts.estimator import ESTIMATOR_MAP
 
 
 
@@ -90,7 +90,7 @@ def main(config: DictConfig):
         desc="Applying chat template to eval split",
     )
 
-    if enable_wabdb := config.wandb["enabled"]:
+    if enable_wandb := config.wandb["enabled"]:
         config.wandb.__delattr__("enabled")
         wandb.init(**config.wandb)
 
@@ -103,7 +103,7 @@ def main(config: DictConfig):
         eval_dataset=sft_eval_dataset,
         args=SFTConfig(
             output_dir=run_dir,
-            report_to="wandb" if enable_wabdb else "none",
+            report_to="wandb" if enable_wandb else "none",
             chat_template_path=config.model["name_or_path"],
             dataset_text_field="text",
             **config.training_args.sft,
@@ -117,58 +117,46 @@ def main(config: DictConfig):
     del trainer
     gc.collect()
 
-    # TODO: make it to test all adapters at once; so the adapter name would be the method name
-    # e.g., none, msp, random
+    # Test all uncertainty methods at once
+    for name, estimator in ESTIMATOR_MAP.items():
+        
+        # Copy adapter weights for DPO
+        clone_adapter(cast(PeftModel, model), "ref_model", f"{name}_policy_model")
+        model.set_adapter(f"{name}_policy_model")
 
-    # Copy adapter weights for DPO
-    # TODO: how about merging the SFT weights, then reinstatiate LoRA weights on DPO?
-    # https://huggingface.co/docs/peft/en/developer_guides/lora#merge-lora-weights-into-the-base-model
-    clone_adapter(cast(PeftModel, model), "ref_model", "policy_model")
-    model.set_adapter("policy_model")
-
-    # Train DPO
-    # TODO: make a cleaner implementation of mapping estimators
-    estimator_map = {
-        None: None,
-        "None": None,
-        "msp": MSP(),
-        "random": RandomEstimator(),
-    }
-    data_collator = DITTOCollator(
-        **config.sampler,
-        pad_token_id=tokenizer.pad_token_id,
-        tokenizer=tokenizer,
-        estimator=estimator_map[config.estimator],
-    )
-    tokenizer.padding_side = "left"
-    trainer = DITTOTrainer(
-        model=model,
-        args=DPOConfig(
-            output_dir=run_dir,
-            report_to="wandb" if enable_wabdb else "none",
-            model_adapter_name="policy_model",
-            ref_adapter_name="ref_model",
-            push_to_hub=config.push_to_hub,
-            hub_model_id=f"{config.model.name}_{config.estimator}_ditto_{config.dataset.name}_{config.dataset.author_id}",
-            **config.training_args.dpo,
-            **config.training_args.general,
-        ),
-        # use_cache=not config.training_args.dpo["gradient_checkpointing"],
-        optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
-        processing_class=tokenizer,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        data_collator=data_collator,
-        callbacks=[
-            ResampleCallback(
-                model, tokenizer, train_dataset, data_collator, config.sampler
+        data_collator = DITTOCollator(
+            **config.sampler,
+            pad_token_id=tokenizer.pad_token_id,
+            tokenizer=tokenizer,
+            estimator=estimator,
+        )
+        tokenizer.padding_side = "left"
+        trainer = DITTOTrainer(
+            model=model,
+            args=DPOConfig(
+                output_dir=run_dir,
+                report_to="wandb" if enable_wandb else "none",
+                model_adapter_name=f"{name}_policy_model",
+                ref_adapter_name="ref_model",
+                push_to_hub=config.push_to_hub,
+                hub_model_id=f"{config.model.name}_{config.dataset.name}_{config.dataset.author_id}",
+                **config.training_args.dpo,
+                **config.training_args.general,
             ),
-        ],
-    )
-    trainer.train()
+            optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
+            processing_class=tokenizer,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator,
+            callbacks=[
+                ResampleCallback(
+                    model, tokenizer, train_dataset, data_collator, config.sampler
+                ),
+            ],
+        )
+        trainer.train()
 
-    trainer.save_model()
+        trainer.save_model()
 
 if __name__ == "__main__":
-    # TODO: make sweep version to test different models, dataset and authorid, and estimator
     main()

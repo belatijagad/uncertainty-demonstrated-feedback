@@ -21,12 +21,12 @@ utils_module = importlib.import_module("scripts.utils")
 seed_everything = utils_module.seed_everything
 generate_model_outputs = utils_module.generate_model_outputs
 
+estimators = importlib.import_module("scripts.estimator")
+ESTIMATOR_MAP = estimators.ESTIMATOR_MAP
+
 logger = logging.getLogger(__name__)
 logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
 
-import random
-from typing import Any
-from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
 
 def process_dataset(
     dataset: DatasetDict | Dataset | IterableDatasetDict | IterableDataset,
@@ -195,11 +195,10 @@ def main(config: DictConfig):
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.pad_token_id
 
-    if config.estimator in ["None", None]:
-        generate_results(model, tokenizer, prompts, examples, generation_config, method_name="zero-shot", base_dir=output_dir)
-        logger.info("-> Finished generating zero shot generations.")
-        generate_results(model, tokenizer, prompts, examples, generation_config, method_name="few-shot", base_dir=output_dir)
-        logger.info("-> Finished generating few shot generations.")
+    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="zero-shot", base_dir=output_dir)
+    logger.info("-> Finished generating zero shot generations.")
+    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="few-shot", base_dir=output_dir)
+    logger.info("-> Finished generating few shot generations.")
 
     # Generate SFT and DITTO completions
     model = PeftModel.from_pretrained(
@@ -208,14 +207,14 @@ def main(config: DictConfig):
         adapter_name="ref_model", 
         is_trainable=False,
     ).to(config.model["device"])
-    if config.estimator in ["None", None]:
-        generate_results(model, tokenizer, prompts, examples, generation_config, method_name="sft", base_dir=output_dir)
-        logger.info("-> Finished generating SFT generations.")
+    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="sft", base_dir=output_dir)
+    logger.info("-> Finished generating SFT generations.")
 
-    model.load_adapter(checkpoint_dir + "/policy_model", adapter_name="policy_model")
-    model.set_adapter("policy_model")
-    generate_results(model, tokenizer, prompts, examples, generation_config, method_name="ditto", base_dir=output_dir)
-    logger.info("-> Finished generating DITTO generations.")
+    for name in ESTIMATOR_MAP.keys():    
+        model.load_adapter(checkpoint_dir + f"/{name}_policy_model", adapter_name=f"{name}_policy_model")
+        model.set_adapter(f"{name}_policy_model")
+        generate_results(model, tokenizer, prompts, examples, generation_config, method_name=name, base_dir=output_dir)
+        logger.info(f"-> Finished generating DITTO {name} generations.")
 
 if __name__ == "__main__":
     # TODO: make sweep version to inference models, dataset and authorid, and estimator
