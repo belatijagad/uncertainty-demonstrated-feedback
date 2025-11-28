@@ -1,0 +1,6 @@
+# @package _group_
+name: Qwen3-8B
+device: "cuda"
+attn_implementation: "sdpa"
+name_or_path: "Qwen/Qwen3-8B"
+use_bf16: true

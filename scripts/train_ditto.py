@@ -145,6 +145,8 @@ def main(config: DictConfig):
             report_to="wandb" if enable_wabdb else "none",
             model_adapter_name="policy_model",
             ref_adapter_name="ref_model",
+            push_to_hub=config.push_to_hub,
+            hub_model_id=f"{config.model.name}_{config.estimator}_ditto_{config.dataset.name}_{config.dataset.author_id}",
             **config.training_args.dpo,
             **config.training_args.general,
         ),
@@ -163,9 +165,6 @@ def main(config: DictConfig):
     trainer.train()
 
     trainer.save_model()
-
-    # TODO: How to push model with customized `repo_id`?
-    # trainer.push_to_hub(model_id=f"{config.dataset.name}_{config.dataset.author_id}_{config.model.name}")
 
 if __name__ == "__main__":
     main()

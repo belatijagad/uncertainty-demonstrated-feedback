@@ -1,3 +1,7 @@
+defaults:
+  - model: ministral-8b
+  - _self_
+
 seed: 42
 
 hydra:
@@ -26,13 +30,6 @@ lora:
     - down_proj
     - up_proj
 
-model:
-  name: Ministral-8B-Instruct-2410
-  device: "cuda"
-  attn_implementation: "sdpa"
-  name_or_path: "mistralai/Ministral-8B-Instruct-2410"
-  use_bf16: true
-
 dataset:
   name: ccat50
   name_or_path: "belati/ccat50"
@@ -41,7 +38,7 @@ dataset:
   num_workers: 0
 
   author_id: 0
-  train_samples_per_author: 10
+  train_samples_per_author: 7
   eval_samples_per_author: 3
 
 training_args:
@@ -81,3 +78,4 @@ sampler:
     repetition_penalty: 1.2
 
 estimator: msp # Random, MSP, "None"
+push_to_hub: true

@@ -1,3 +1,7 @@
+defaults:
+  - model: ministral-8b
+  - _self_
+
 seed: 42
 
 hydra:
@@ -16,13 +20,8 @@ dataset:
   author_id: 0
   eval_split: test # train, test, val
   
-  num_train_samples: 10
-  num_eval_samples: 20
-
-model:
-  name: Ministral-8B-Instruct-2410
-  name_or_path: mistralai/Ministral-8B-Instruct-2410
-  device: cuda
+  num_train_samples: 7
+  num_eval_samples: 3
 
 gen_kwargs:
   do_sample: true
