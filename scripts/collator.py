@@ -11,6 +11,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from trl.trainer.dpo_trainer import DataCollatorForPreference
 
 from scripts.utils import generate_model_outputs
+from scripts.estimator import BaseEstimator
 
 @dataclass
 class DITTOCollator(DataCollatorForPreference):
@@ -27,6 +28,7 @@ class DITTOCollator(DataCollatorForPreference):
         default_factory=dict, init=False, repr=False
     )
     last_sampled_step: int = field(default=0, init=False)
+    estimator: BaseEstimator = BaseEstimator()
 
     def __init__(self, *args, **kwargs):
         self.frac_expert = kwargs.pop("frac_expert", 0.7)
@@ -61,26 +63,26 @@ class DITTOCollator(DataCollatorForPreference):
 
         prompts = list(dataset["prompt"])
         
-        text_chunks, sequences_view, scores_view = generate_model_outputs(
+        text_chunks, sequences_view, scores_view, logits_view = generate_model_outputs(
             prompts=prompts,
             model=model,
             tokenizer=tokenizer,
             gen_kwargs=self.gen_kwargs,
         )
 
-        for prompt, texts, scores, seq_chunk in zip(
-            prompts, text_chunks, scores_view, sequences_view, strict=True
+        for prompt, texts, scores, seq_chunk, logits_chunk in zip(
+            prompts, text_chunks, scores_view, sequences_view, logits_view, strict=True
         ):
             cache_slot = self.cache[step].setdefault(prompt, [])
 
-            for text, seq, score_seq in zip(texts, seq_chunk, scores, strict=True):
+            for text, seq, score_seq, logits_seq in zip(texts, seq_chunk, scores, logits_chunk, strict=True):
                 if tokenizer.eos_token and not text.endswith(tokenizer.eos_token):
                     text += tokenizer.eos_token
 
                 cache_slot.append(
                     {
                         "generated_text": text,
-                        "score": self.estimator(text, seq, score_seq),
+                        "score": self.estimator(text, seq, score_seq, logits_seq),
                     }
                 )
         

@@ -1,31 +1,39 @@
 import torch
+import torch.nn.functional as F
 
 
 class BaseEstimator:
-    """Default estimator that returns the summed log-probabilities."""
+    """Default estimator."""
+    def __repr__(self):
+        return "Base"
 
     def __call__(
         self,
         input_text: str,
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
+        logits: torch.Tensor,
     ) -> float:
         return 0.0
 
 
 class RandomEstimator(BaseEstimator):
+    def __repr__(self):
+        return "Random"
+    
     def __call__(
         self,
         input_text: str,
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
+        logits: torch.Tensor,
     ) -> torch.Tensor:
         return torch.rand(1)
 
 
 class MSP(BaseEstimator):
     """
-    Calculates the uncertainty score using Maximum Softmax Probability (MSP).
+    Calculates the uncertainty score using Maximum Sequence Probability (MSP).
 
     This method computes the total log-probability of a given sequence (`input_ids`)
     based on the model's `logits`. It's a common baseline for uncertainty
@@ -34,11 +42,42 @@ class MSP(BaseEstimator):
     The score is calculated by summing the log-softmax probabilities of the
     actual tokens in the input sequence.
     """
+    def __repr__(self):
+        return "MSP"
 
     def __call__(
         self,
         input_text: str,
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
+        logits: torch.Tensor,
     ) -> float:
         return float(logprobs.sum().detach().cpu())
+    
+class MTE(BaseEstimator):
+    def __repr__(self):
+        return "MTE"
+    
+    def __call__(
+        self,
+        input_text: str,
+        input_ids: torch.Tensor,
+        logprobs: torch.Tensor,
+        logits: torch.Tensor,
+    ) -> torch.Tensor:
+        """Mean Token Entropy"""
+        if logits.dim() == 3:
+            logits = logits.squeeze(0)
+
+        all_log_probs = F.log_softmax(logits, dim=-1)
+        token_entropies = -torch.sum(torch.exp(all_log_probs) * all_log_probs, dim=-1)
+
+        return token_entropies.mean()
+
+
+ESTIMATOR_MAP = {
+    "None": BaseEstimator(),
+    "Random": RandomEstimator(),
+    "MSP": MSP(),
+    "MTE": MTE(),
+}
