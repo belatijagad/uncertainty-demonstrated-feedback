@@ -18,6 +18,7 @@ from transformers import (
     AutoTokenizer,
 )
 from trl import DPOConfig, SFTConfig, SFTTrainer
+from huggingface_hub import repo_exists, file_exists
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -55,8 +56,9 @@ def main(config: DictConfig):
     model = AutoModelForCausalLM.from_pretrained(
         config.model["name_or_path"],
         attn_implementation=config.model["attn_implementation"],
-        dtype=torch.bfloat16 if config.model["use_bf16"] else torch.float32,
-    ).to(config.model["device"])
+        dtype=torch.bfloat16 if config.model["use_bf16"] else torch.float16,
+        device_map="auto",
+    )
     lora_config = LoraConfig(**OmegaConf.to_container(config.lora, resolve=True), task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ref_model")
     model.set_adapter("ref_model")
@@ -118,11 +120,22 @@ def main(config: DictConfig):
     gc.collect()
 
     # Test all uncertainty methods at once
+    repo_username = "belati"
+    repo_name_base = f"{config.model.name}_{config.dataset.name}_{config.dataset.author_id}"
+    full_repo_id = f"{repo_username}/{repo_name_base}"
     for name, estimator in ESTIMATOR_MAP.items():
+        logger.info(f"Preparing DITTO training for method: {name}")
         
-        # Copy adapter weights for DPO
-        clone_adapter(cast(PeftModel, model), "ref_model", f"{name}_policy_model")
-        model.set_adapter(f"{name}_policy_model")
+        adapter_name = f"{name}_policy_model"
+
+        if repo_exists(full_repo_id):
+            if file_exists(full_repo_id, filename="adapter_config.json"):
+                logger.info(f"=>> Method {name} already exists in {full_repo_id}; skipping...")
+                continue
+        
+        # Clone SFT weights to new Adapter
+        clone_adapter(cast(PeftModel, model), "ref_model", adapter_name)
+        model.set_adapter(adapter_name)
 
         data_collator = DITTOCollator(
             **config.sampler,
@@ -130,16 +143,16 @@ def main(config: DictConfig):
             tokenizer=tokenizer,
             estimator=estimator,
         )
-        tokenizer.padding_side = "left"
-        trainer = DITTOTrainer(
+        
+        dpo_trainer = DITTOTrainer(
             model=model,
             args=DPOConfig(
-                output_dir=run_dir,
+                output_dir=str(Path(run_dir) / name),
                 report_to="wandb" if enable_wandb else "none",
-                model_adapter_name=f"{name}_policy_model",
+                model_adapter_name=adapter_name,
                 ref_adapter_name="ref_model",
                 push_to_hub=config.push_to_hub,
-                hub_model_id=f"{config.model.name}_{config.dataset.name}_{config.dataset.author_id}",
+                hub_model_id=full_repo_id,
                 **config.training_args.dpo,
                 **config.training_args.general,
             ),
@@ -154,9 +167,18 @@ def main(config: DictConfig):
                 ),
             ],
         )
-        trainer.train()
-
-        trainer.save_model()
+        
+        dpo_trainer.train()
+        dpo_trainer.save_model()
+        
+        # Cleanup
+        del dpo_trainer
+        model.delete_adapter(adapter_name)
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        # Switch back to ref for next cloning
+        model.set_adapter("ref_model")
 
 if __name__ == "__main__":
     main()

@@ -8,7 +8,7 @@ hydra:
   run:
     dir: outputs/models/${dataset.name}_${dataset.author_id}_${model.name}
   sweep:
-    dir: output/models
+    dir: outputs/models
     subdir: ${dataset.name}_${dataset.author_id}_${model.name}
 
 wandb:

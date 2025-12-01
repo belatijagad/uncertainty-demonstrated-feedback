@@ -192,7 +192,7 @@ def generate_rejected_responses(
     gen_kwargs = {"num_return_sequences": 1, "do_sample": False, "repetition_penalty": 0.8}
 
     prompts = list(dataset["prompt"])
-    text_chunks, _, _ = generate_model_outputs(
+    text_chunks, _, _, _ = generate_model_outputs(
         prompts=prompts,
         model=model,
         tokenizer=tokenizer,
