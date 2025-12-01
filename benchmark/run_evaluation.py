@@ -59,6 +59,8 @@ def aggregate_responses() -> dict[str, Any]:
                 resp_key = "completion"
             elif "demo" in headers:
                 resp_key = "demo"
+            elif "chosen" in headers:
+                resp_key = "chosen"
             else:
                 resp_key = headers[1] if len(headers) > 1 else "completion"
 

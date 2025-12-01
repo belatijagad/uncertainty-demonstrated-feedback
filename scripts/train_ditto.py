@@ -123,6 +123,8 @@ def main(config: DictConfig):
     repo_username = "belati"
     repo_name_base = f"{config.model.name}_{config.dataset.name}_{config.dataset.author_id}"
     full_repo_id = f"{repo_username}/{repo_name_base}"
+
+    tokenizer.padding_side = "left"
     for name, estimator in ESTIMATOR_MAP.items():
         logger.info(f"Preparing DITTO training for method: {name}")
         

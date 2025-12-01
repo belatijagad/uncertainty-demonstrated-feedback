@@ -18,8 +18,8 @@ wandb:
   group: "ditto"
 
 lora:
-  r: 16
-  lora_alpha: 32
+  r: 32
+  lora_alpha: 64
   lora_dropout: 0.05
   target_modules:
     - q_proj
@@ -33,8 +33,6 @@ lora:
 dataset:
   name: ccat50
   name_or_path: "belati/ccat50"
-  batch_size: 2 # device_batch * rescale_batch = 2 * 2 what is this for?
-  max_length: 1024
   num_workers: 0
 
   author_id: 0
@@ -47,15 +45,17 @@ training_args:
   sft:
     warmup_steps: 10
     max_steps: 100
-    per_device_train_batch_size: 4
+    max_length: 2048
+    per_device_train_batch_size: 8
+    padding_free: true
   dpo:
-    warmup_steps: 10
-    max_steps: 50
-    max_length: 1024
+    warmup_steps: 5
+    max_steps: 30
+    max_length: 2048
     max_prompt_length: 512
-    max_completion_length: 512
     gradient_checkpointing: true
-    per_device_train_batch_size: 4
+    per_device_train_batch_size: 8
+    padding_free: true
 
 optim_args:
   sft:
@@ -75,6 +75,5 @@ sampler:
   gen_kwargs:
     do_sample: true
     num_return_sequences: 10
-    repetition_penalty: 1.2
 
 push_to_hub: true
