@@ -86,14 +86,13 @@ def generate_examples(
     os.makedirs(base_dir+"/examples", exist_ok=True)
     example_dataset.to_csv(base_dir + "/examples/" + f"{dataset_kwargs["name"]}_{dataset_kwargs["author_id"]}.csv", index=False)
 
-
 def generate_results(
     model: PreTrainedModel, 
     tokenizer: PreTrainedTokenizer, 
     prompts: list[str],
     examples: list[dict[str, Any]],
     gen_kwargs: dict[str, Any],
-    method_name: Literal["zero-shot", "few-shot", "sft", "ditto"],
+    method_name: str,
     base_dir: str,
 ) -> None:
     responses_dict = {
@@ -102,32 +101,32 @@ def generate_results(
     }
 
     model_inputs = []
-    csv_prompts = []
+    # In all cases, the raw prompt we save to CSV is just the input string
+    csv_prompts = prompts 
     decoded_prefixes = [] 
 
     gen_kwargs = gen_kwargs.copy()
     batch_size = gen_kwargs.pop("batch_size", 1) 
 
-    if method_name == "zero-shot":
-        model_inputs = prompts
-        csv_prompts = prompts
-        
-    elif method_name == "few-shot":
-        formatted_examples = []
-        for example in examples:
-            formatted_examples.append(f"Prompt:\n{example.get('prompt')}\n\nCompletion:\n{example.get('chosen')}")
-        few_shot_context = "\n\n".join(formatted_examples)
-        
-        model_inputs = [f"{few_shot_context}\n\nPrompt:\n{p}\n\nCompletion:" for p in prompts]
-        csv_prompts = prompts
+    # Input construction
+    for p in prompts:
+        messages = []
 
-    elif method_name in ["sft", "ditto"]:
-        csv_prompts = prompts 
-        for p in prompts:
-            messages = [{"role": "user", "content": p}]
-            formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            model_inputs.append(formatted)
+        if method_name == "few-shot":
+            for example in examples:
+                messages.append({"role": "user", "content": example.get('prompt')})
+                messages.append({"role": "assistant", "content": example.get('chosen')})
 
+        messages.append({"role": "user", "content": p})
+
+        formatted = tokenizer.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+        model_inputs.append(formatted)
+
+    # Prefix calculations
     for inp in model_inputs:
         temp_ids = tokenizer(inp, add_special_tokens=False)["input_ids"]
         prefix = tokenizer.decode(temp_ids, skip_special_tokens=True)
@@ -135,6 +134,7 @@ def generate_results(
 
     all_text_chunks = []
 
+    # Generation loop
     for i in range(0, len(model_inputs), batch_size):
         batch_inputs = model_inputs[i : i + batch_size]
         
@@ -146,6 +146,7 @@ def generate_results(
         )
         all_text_chunks.extend(batch_chunks)
             
+    # Post-processing
     for raw_prompt, prefix, generations in zip(csv_prompts, decoded_prefixes, all_text_chunks, strict=True):
         clean_prompt = raw_prompt.replace('\n', '\\n')
         responses_dict["prompt"].append(clean_prompt)
@@ -164,7 +165,6 @@ def generate_results(
     responses = pd.DataFrame.from_dict(responses_dict)
     os.makedirs(base_dir, exist_ok=True)
     responses.to_csv(f"{base_dir}/{method_name}.csv", index=False)
-
 
 @hydra.main(version_base=None, config_path="../configs", config_name="generation")
 def main(config: DictConfig):
