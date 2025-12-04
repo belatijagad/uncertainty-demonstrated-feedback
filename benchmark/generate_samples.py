@@ -138,7 +138,7 @@ def generate_results(
     for i in range(0, len(model_inputs), batch_size):
         batch_inputs = model_inputs[i : i + batch_size]
         
-        batch_chunks, _, _ = generate_model_outputs(
+        batch_chunks, _, _, _ = generate_model_outputs(
             batch_inputs,
             model,
             tokenizer,
@@ -197,7 +197,7 @@ def main(config: DictConfig):
     logger.info("Loading base model...")
     model = AutoModelForCausalLM.from_pretrained(
         config.model.name_or_path,
-        torch_dtype=dtype,
+        dtype=dtype,
         device_map="auto"
     )
     
@@ -220,7 +220,8 @@ def main(config: DictConfig):
     model = PeftModel.from_pretrained(
         model=model, 
         model_id=ref_model_path,
-        adapter_name="ref_model", 
+        subfolder="ref_model",
+        adapter_name="ref_model",
         is_trainable=False,
     )
     
@@ -240,7 +241,7 @@ def main(config: DictConfig):
         logger.info(f"Loading Adapter: {name} from {adapter_path}")
         
         try:
-            model.load_adapter(adapter_path, adapter_name=adapter_name)
+            model.load_adapter(adapter_path, adapter_name=adapter_name, subfolder=adapter_name)
             model.set_adapter(adapter_name)
             
             generate_results(model, tokenizer, prompts, examples, generation_config, method_name=name, base_dir=str(output_dir))

@@ -6,14 +6,14 @@ seed: 42
 
 hydra:
   run:
-    dir: outputs/models/${dataset.name}_${dataset.author_id}_${model.name}
+    dir: outputs/generations/${dataset.name}_${dataset.author_id}_${model.name}
   sweep:
-    dir: outputs/models
+    dir: outputs/generations
     subdir: ${dataset.name}_${dataset.author_id}_${model.name}
 
 checkpoints:
   base_dir: outputs/models
-  run_name: ${dataset.name}_${dataset.author_id}_${model.name}_${estimator}
+  run_name: ${dataset.name}_${dataset.author_id}_${model.name}
 
 dataset:
   name: ccat50
@@ -28,6 +28,5 @@ gen_kwargs:
   do_sample: true
   batch_size: 2
   num_return_sequences: 1
-  max_new_tokens: 
-  cache_implementation: offloaded
+  max_new_tokens: 2048
   repetition_penalty: 1.2

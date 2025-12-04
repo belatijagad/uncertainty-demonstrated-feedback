@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 import torch
 from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
@@ -73,8 +73,25 @@ def generate_model_outputs(
     tokenizer: PreTrainedTokenizerBase,
     *,
     gen_kwargs: dict[str, Any],
-) -> tuple[list[list[str]], torch.Tensor, torch.Tensor]:
+) -> tuple[list[list[str]], torch.Tensor, torch.Tensor, torch.Tensor]:
     inputs = tokenizer(prompts, padding=True, return_tensors="pt").to(model.device)
+
+    if isinstance(gen_kwargs, DictConfig):
+        gen_kwargs = OmegaConf.to_container(gen_kwargs, resolve=True)
+    else:
+        gen_kwargs = gen_kwargs.copy()
+
+    if gen_kwargs.get("eos_token_id") is None:
+        gen_kwargs["eos_token_id"] = tokenizer.eos_token_id
+
+    if gen_kwargs.get("pad_token_id") is None:
+        if tokenizer.pad_token_id is not None:
+            gen_kwargs["pad_token_id"] = tokenizer.pad_token_id
+        else:
+            gen_kwargs["pad_token_id"] = tokenizer.eos_token_id
+            
+    if gen_kwargs.get("pad_token_id") is None:
+        gen_kwargs["pad_token_id"] = 0
 
     with torch.inference_mode():
         outputs = model.generate(
@@ -96,27 +113,33 @@ def generate_model_outputs(
         normalize_logits=False,
     ).cpu()
 
-    decoded_text = tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)
+    decoded_text = []
+    for seq in outputs.sequences:
+        full_decode = tokenizer.decode(seq, skip_special_tokens=False)
+        if tokenizer.pad_token:
+            full_decode = full_decode.replace(tokenizer.pad_token, "")
+        decoded_text.append(full_decode)
 
     batch_size = len(prompts)
+    num_return_sequences = gen_kwargs.get("num_return_sequences", 1)
+
     scores_view = transition_scores.contiguous().view(
-        batch_size, gen_kwargs["num_return_sequences"], -1
+        batch_size, num_return_sequences, -1
     )
     sequences_view = (
         outputs.sequences.cpu()
         .contiguous()
-        .view(batch_size, gen_kwargs["num_return_sequences"], outputs.sequences.size(-1))
+        .view(batch_size, num_return_sequences, outputs.sequences.size(-1))
     )
     logits_view = raw_logits.contiguous().view(
-        batch_size, gen_kwargs["num_return_sequences"], -1, raw_logits.size(-1)
+        batch_size, num_return_sequences, -1, raw_logits.size(-1)
     )
     text_chunks = [
-        decoded_text[i : i + gen_kwargs["num_return_sequences"]]
-        for i in range(0, len(decoded_text), gen_kwargs["num_return_sequences"])
+        decoded_text[i : i + num_return_sequences]
+        for i in range(0, len(decoded_text), num_return_sequences)
     ]
 
     return text_chunks, sequences_view, scores_view, logits_view
-
 
 def process_dataset(
     dataset: DatasetDict | Dataset | IterableDatasetDict | IterableDataset,

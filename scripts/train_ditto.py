@@ -1,4 +1,5 @@
 import gc
+import os
 import sys
 import logging
 from pathlib import Path
@@ -48,6 +49,7 @@ logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
 @hydra.main(version_base=None, config_path="../configs", config_name="ditto")
 def main(config: DictConfig):
     load_dotenv()
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     seed_everything(config["seed"])
 
     run_dir = hydra.core.hydra_config.HydraConfig.get()['runtime']['output_dir']
@@ -58,6 +60,7 @@ def main(config: DictConfig):
         attn_implementation=config.model["attn_implementation"],
         dtype=torch.bfloat16 if config.model["use_bf16"] else torch.float16,
         device_map="auto",
+        # max_memory={0: "60GiB"},
     )
     lora_config = LoraConfig(**OmegaConf.to_container(config.lora, resolve=True), task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ref_model")
@@ -73,10 +76,10 @@ def main(config: DictConfig):
     train_dataset = train_dataset.add_column(
         "example_id", list(range(len(train_dataset)))
     )
-    eval_dataset = eval_dataset.add_column("example_id", list(range(len(eval_dataset))))
-    eval_dataset = generate_rejected_responses(
-        eval_dataset, model, tokenizer, config.dataset, logger
-    )
+    # eval_dataset = eval_dataset.add_column("example_id", list(range(len(eval_dataset))))
+    # eval_dataset = generate_rejected_responses(
+    #     eval_dataset, model, tokenizer, config.dataset, logger
+    # )
 
     def _format_example(example):
         return apply_chat_template(example, tokenizer)
@@ -86,11 +89,11 @@ def main(config: DictConfig):
         num_proc=0,
         desc="Applying chat template to train split",
     )
-    sft_eval_dataset = eval_dataset.map(
-        _format_example,
-        num_proc=0,
-        desc="Applying chat template to eval split",
-    )
+    # sft_eval_dataset = eval_dataset.map(
+    #     _format_example,
+    #     num_proc=0,
+    #     desc="Applying chat template to eval split",
+    # )
 
     if enable_wandb := config.wandb["enabled"]:
         config.wandb.__delattr__("enabled")
@@ -102,7 +105,7 @@ def main(config: DictConfig):
         model=model,
         processing_class=tokenizer,
         train_dataset=sft_train_dataset,
-        eval_dataset=sft_eval_dataset,
+        # eval_dataset=sft_eval_dataset,
         args=SFTConfig(
             output_dir=run_dir,
             report_to="wandb" if enable_wandb else "none",
@@ -161,7 +164,7 @@ def main(config: DictConfig):
             optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
             processing_class=tokenizer,
             train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
+            # eval_dataset=eval_dataset,
             data_collator=data_collator,
             callbacks=[
                 ResampleCallback(
