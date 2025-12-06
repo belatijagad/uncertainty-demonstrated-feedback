@@ -2,13 +2,14 @@
 # Copyright 2020-2025 The HuggingFace Team. All rights reserved.
 
 import random
-import torch
-from dataclasses import dataclass, field
 from typing import Any
+from dataclasses import dataclass, field
 
+import torch
 from datasets import Dataset, IterableDataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from trl.trainer.dpo_trainer import DataCollatorForPreference
+from trl.trainer.utils import pad
 
 from scripts.utils import generate_model_outputs
 from scripts.estimator import BaseEstimator
@@ -23,27 +24,22 @@ class DITTOCollator(DataCollatorForPreference):
     frac_replay: float = 0.2
     frac_noisy: float = 0.1
     rescale_batch: int = 2
+    higher_is_better: bool = False
+    gen_kwargs: dict = field(default_factory=dict)
 
-    cache: dict[int, dict[str, list[dict[str, Any]]]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    last_sampled_step: int = field(default=0, init=False)
-    estimator: BaseEstimator = BaseEstimator()
+    tokenizer: PreTrainedTokenizerBase = None
+    estimator: BaseEstimator = None
 
-    def __init__(self, *args, **kwargs):
-        self.frac_expert = kwargs.pop("frac_expert", 0.7)
-        self.frac_replay = kwargs.pop("frac_replay", 0.2)
-        self.frac_noisy = kwargs.pop("frac_noisy", 0.1)
-        self.rescale_batch = kwargs.pop("rescale_batch", 2)
-        self.tokenizer = kwargs.pop("tokenizer")
-        self.resample_rate = kwargs.pop("resample_rate")
-        self.estimator = kwargs.pop("estimator")
-        self.gen_kwargs = kwargs.pop("gen_kwargs")
+    # dict[timestep: int, dict[ prompt: str, list[ outputs: dict[str, torch.tensor] ] ] ]
+    cache: dict[int, dict[str, list[ dict[str, torch.Tensor] ]]] = field(default_factory=dict)
+    sampled_step: int = field(default=0, init=False)
+
+    def __post_init__(self):
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer must be provided to `DITTOCollator`.")
         
-        super().__init__(*args, **kwargs)
-        
-        self.cache = {}
-        self.last_sampled_step = 0
+        if self.pad_token_id == None:
+            self.pad_token_id = self.tokenizer.pad_token_id
 
     def set_mode(self, *, training: bool) -> None:
         self.mode = "train" if training else "eval"
@@ -58,46 +54,62 @@ class DITTOCollator(DataCollatorForPreference):
         """
         Generates new responses from the model and updates the cache.
         """
-        self.last_sampled_step = step
+        self.sampled_step = step
         self.cache.setdefault(step, {})
 
         prompts = list(dataset["prompt"])
         
-        text_chunks, sequences_view, scores_view, logits_view = generate_model_outputs(
+        # TODO: finalize the utils generation
+        (
+            prompt_input_ids, 
+            generation_input_ids, 
+            scores_view, 
+            logits_view
+        ) = generate_model_outputs(
             prompts=prompts,
             model=model,
             tokenizer=tokenizer,
             gen_kwargs=self.gen_kwargs,
         )
 
-        for prompt, texts, scores, seq_chunk, logits_chunk in zip(
-            prompts, text_chunks, scores_view, sequences_view, logits_view, strict=True
+        for prompt, pr_ids, gen_ids, scores, logits in zip(
+            prompts,
+            prompt_input_ids, generation_input_ids,
+            scores_view, logits_view, strict=True
         ):
             cache_slot = self.cache[step].setdefault(prompt, [])
 
-            for text, seq, score_seq, logits_seq in zip(texts, seq_chunk, scores, logits_chunk, strict=True):
-                if tokenizer.eos_token and not text.endswith(tokenizer.eos_token):
-                    text += tokenizer.eos_token
-
+            # For each generated sequences for the same prompt
+            for pr_id, gen_id, score, logit in zip(
+                pr_ids, gen_ids, scores, logits, strict=True
+            ):
                 cache_slot.append(
                     {
-                        "generated_text": text,
-                        "score": self.estimator(text, seq, score_seq, logits_seq),
+                        "score": self.estimator(gen_id, score, logit),
+                        "prompt_input_ids": pr_id,
+                        "generated_input_ids": gen_id,
                     }
                 )
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def _get_noisy_pairs(self, prompt: str, step_a: int) -> list[tuple]:
+    def _get_noisy_pairs(
+            self, 
+            prompt: list[torch.Tensor], 
+            step_a: int,
+        ) -> list[tuple]:
         """
         Generates 'noisy' preference pairs by comparing scores of different generations.
         """
         noisy_pairs = []
-        if prompt not in self.cache.get(step_a, {}):
+
+        step_data = self.cache.get(step_a, {})
+        if prompt not in step_data:
             return noisy_pairs
 
         current_entries = self.cache[step_a][prompt]
+        prompt_input_ids = current_entries[0]["prompt_input_ids"]
         
         # Look at all previous steps
         for step_b in range(step_a):
@@ -105,135 +117,77 @@ class DITTOCollator(DataCollatorForPreference):
             if not past_entries:
                 continue
 
-            for newer in current_entries:
-                for older in past_entries:
-                    if newer["generated_text"] == older["generated_text"]:
-                        continue
+            for current in current_entries:
+                for past in past_entries:
+                    curr_score, past_score = float(current["score"]), float(past["score"])
+                    past_is_better = (
+                        (past_score > curr_score) 
+                        if self.higher_is_better 
+                        else (past_score < curr_score)
+                    )
+                    final_chosen = past if past_is_better else current
+                    final_rejected = current if past_is_better else past
 
-                    newer_score = float(newer["score"])
-                    older_score = float(older["score"])
+                    noisy_pairs.append((
+                        prompt_input_ids, 
+                        final_chosen["generation_input_ids"], 
+                        final_rejected["generation_input_ids"]
+                    ))
 
-                    # Score-based selection: Better score is 'chosen'
-                    if newer_score != older_score:
-                        chosen, rejected = (
-                            (newer, older)
-                            if newer_score > older_score
-                            else (older, newer)
-                        )
-                        # Extract just the text
-                        noisy_pairs.append((prompt, chosen["generated_text"], rejected["generated_text"]))
-        
         return noisy_pairs
 
-    def _build_dpo_batch_element(self, prompt: str, chosen: str, rejected: str) -> dict[str, Any]:
-        """
-        Manually tokenizes and creates LABELS for the DPO trainer.
-        Sets the prompt labels to -100 so the model doesn't calculate loss on the prompt.
-        """
-        # 1. Tokenize components
-        prompt_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
-        chosen_ids = self.tokenizer(chosen, add_special_tokens=False)["input_ids"]
-        rejected_ids = self.tokenizer(rejected, add_special_tokens=False)["input_ids"]
-
-        # 2. Add EOS if missing
-        if self.tokenizer.eos_token_id is not None:
-             if not chosen_ids or chosen_ids[-1] != self.tokenizer.eos_token_id:
-                 chosen_ids.append(self.tokenizer.eos_token_id)
-             if not rejected_ids or rejected_ids[-1] != self.tokenizer.eos_token_id:
-                 rejected_ids.append(self.tokenizer.eos_token_id)
-
-        # 3. Concatenate (Prompt + Response)
-        full_chosen_ids = prompt_ids + chosen_ids
-        full_rejected_ids = prompt_ids + rejected_ids
-
-        # 4. Create Labels (Masking the prompt)
-        prompt_len = len(prompt_ids)
-        chosen_labels = [-100] * prompt_len + chosen_ids
-        rejected_labels = [-100] * prompt_len + rejected_ids
-
-        # 5. Return dict compatible with parent torch_call
-        return {
-            "prompt": prompt,
-            "chosen": chosen,
-            "rejected": rejected,
-            "prompt_input_ids": prompt_ids,
-            "prompt_attention_mask": [1] * len(prompt_ids),
-            
-            "chosen_input_ids": full_chosen_ids,
-            "chosen_attention_mask": [1] * len(full_chosen_ids),
-            "chosen_labels": chosen_labels,
-            
-            "rejected_input_ids": full_rejected_ids,
-            "rejected_attention_mask": [1] * len(full_rejected_ids),
-            "rejected_labels": rejected_labels,
-        }
-
-    def _get_sampled_triplets(self, examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """
-        Decodes input IDs, queries the cache for DITTO samples, and re-tokenizes the result.
-        """
-        new_batch_examples = []
+    def torch_call(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
+        def attn_mask(input_ids: list[torch.Tensor]) -> list[torch.Tensor]:
+            return [torch.ones_like(input_id) for input_id in input_ids]
+        
+        expert_samples = []
+        replay_samples = []
+        noisy_samples = []
 
         for example in examples:
-            prompt_text = self.tokenizer.decode(example["prompt_input_ids"], skip_special_tokens=True)
+            prompt_text = example["prompt"]
+            # Expert samples
+            for rejected in self.cache[self.sampled_step][prompt_text]:
+                expert_samples.append((
+                    example["prompt_input_ids"],
+                    example["chosen_input_ids"],
+                    rejected["generation_input_ids"],
+                ))
+
+            assert expert_samples
             
-            # Careful: chosen_input_ids often includes the prompt. We assume prompt is consistent.
-            full_chosen_text = self.tokenizer.decode(example["chosen_input_ids"], skip_special_tokens=True)
-            # Strip prompt roughly if needed, or just use full text as the "chosen" response string
-            # For simplicity, we use the decoded text as is, assuming the model handles it.
-            chosen_text = full_chosen_text[len(prompt_text):] if full_chosen_text.startswith(prompt_text) else full_chosen_text
-
-            expert_samples = []
-            replay_samples = []
-            noisy_samples = []
-
-            # Expert pairs
-            if (self.last_sampled_step in self.cache and prompt_text in self.cache[self.last_sampled_step]):
-                for rejected_data in self.cache[self.last_sampled_step][prompt_text]:
-                    expert_samples.append((prompt_text, chosen_text, rejected_data["generated_text"]))
-
-            # Iterate history
             for step_a in self.cache.keys():
-                if prompt_text not in self.cache.get(step_a, {}): continue
-                
-                # Replay pairs
-                if step_a < self.last_sampled_step:
-                    for rejected_data in self.cache[step_a][prompt_text]:
-                        replay_samples.append((prompt_text, chosen_text, rejected_data["generated_text"]))
-
-                # Noisy pairs
+                # Replay samples
+                if step_a < self.sampled_step:
+                    for rejected in self.cache[self.sampled_step][prompt_text]:
+                        replay_samples.append((
+                            example["prompt_input_ids"],
+                            example["chosen_input_ids"],
+                            rejected["generation_input_ids"],
+                        ))
+                # Noisy samples
                 noisy_samples.extend(self._get_noisy_pairs(prompt_text, step_a))
-
-            len_superbatch = len(examples) * self.rescale_batch
-            
-            def safe_sample(source, frac):
-                count = min(len(source), int(len_superbatch * frac))
-                return random.sample(source, count) if count > 0 else []
-
-            selected_triplets = (
-                safe_sample(expert_samples, self.frac_expert) +
-                safe_sample(replay_samples, self.frac_replay) +
-                safe_sample(noisy_samples, self.frac_noisy)
-            )
-
-            if not selected_triplets:
-                new_batch_examples.append(example)
-                continue
-
-            for p_txt, c_txt, r_txt in selected_triplets:
-                batch_element = self._build_dpo_batch_element(p_txt, c_txt, r_txt)
-                new_batch_examples.append(batch_element)
-
-        return new_batch_examples
-
-    def torch_call(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
-        # If cache is empty, just behave like a normal DPO collator
-        if self.mode == "eval":
-            return super().torch_call(examples)
         
-        # Get DITTO samples (returns a list of dicts with IDs and Labels)
-        sampled_batch = self._get_sampled_triplets(examples)
-        
-        assert sampled_batch
+        # Sample outputs
+        n_expert = int(len(expert_samples) * self.frac_expert)
+        n_replay = int(len(replay_samples) * self.frac_replay)
+        n_noisy  = int(len(noisy_samples)  * self.frac_noisy )
+        samples  = (
+            random.sample(expert_samples, min(len(expert_samples), n_expert)) +
+            random.sample(replay_samples, min(len(replay_samples), n_replay)) +
+            random.sample(noisy_samples,  min(len(noisy_samples),  n_noisy))
+        )
 
-        return super().torch_call(sampled_batch)
+        # Form output
+        keys = ["prompt_input_ids", "chosen_input_ids", "rejected_input_ids"]
+        output = {
+            key: [sample[i] for sample in samples]
+            for i, key in enumerate(keys)
+        }
+        
+        # Create attn mask and pad
+        for name, ids in output.keys():
+            output[name] = pad(ids, padding_value=self.tokenizer.pad_token_id, padding_side="left")
+            output[f"{name.split["_"][0]}_attention_mask"] = pad(attn_mask(ids), padding_value=0, padding_side="left" if "prompt" in name else "right")
+        
+        return output

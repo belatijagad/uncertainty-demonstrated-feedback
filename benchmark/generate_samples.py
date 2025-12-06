@@ -4,7 +4,7 @@ import random
 import logging
 import importlib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import hydra
 import torch
@@ -51,21 +51,15 @@ def process_dataset(
     examples = train_rows[:n_train]
 
     eval_candidates_rows = []
-
-    if target_eval_split == "train":
-        eval_candidates_rows = train_rows[n_train:]
-    else:
-        if target_eval_split not in dataset:
-            raise ValueError(f"Split '{target_eval_split}' not found in dataset.")
             
-        eval_data = dataset[target_eval_split]
-        eval_rows: list[dict[str, Any]] = [
-            example for example in eval_data if example.get("author_id") == author_id
-        ]
-        
-        assert eval_rows, f"No rows found for author {author_id} in '{target_eval_split}' split."
-        random.shuffle(eval_rows)
-        eval_candidates_rows = eval_rows
+    eval_data = dataset[target_eval_split]
+    eval_rows: list[dict[str, Any]] = [
+        example for example in eval_data if example.get("author_id") == author_id
+    ]
+    
+    assert eval_rows, f"No rows found for author {author_id} in '{target_eval_split}' split."
+    random.shuffle(eval_rows)
+    eval_candidates_rows = eval_rows
 
     final_eval_selection = eval_candidates_rows[:n_eval]
 
@@ -101,14 +95,11 @@ def generate_results(
     }
 
     model_inputs = []
-    # In all cases, the raw prompt we save to CSV is just the input string
     csv_prompts = prompts 
-    decoded_prefixes = [] 
-
+    
     gen_kwargs = gen_kwargs.copy()
     batch_size = gen_kwargs.pop("batch_size", 1) 
 
-    # Input construction
     for p in prompts:
         messages = []
 
@@ -126,40 +117,28 @@ def generate_results(
         )
         model_inputs.append(formatted)
 
-    # Prefix calculations
-    for inp in model_inputs:
-        temp_ids = tokenizer(inp, add_special_tokens=False)["input_ids"]
-        prefix = tokenizer.decode(temp_ids, skip_special_tokens=True)
-        decoded_prefixes.append(prefix)
+    all_completions = []
 
-    all_text_chunks = []
-
-    # Generation loop
     for i in range(0, len(model_inputs), batch_size):
-        batch_inputs = model_inputs[i : i + batch_size]
+        batch_prompts = model_inputs[i : i + batch_size]
         
-        batch_chunks, _, _, _ = generate_model_outputs(
-            batch_inputs,
-            model,
-            tokenizer,
+        _, generated_ids, _, _ = generate_model_outputs(
+            prompts=batch_prompts,
+            model=model,
+            tokenizer=tokenizer,
             gen_kwargs=gen_kwargs,
         )
-        all_text_chunks.extend(batch_chunks)
+        
+        first_gens = generated_ids[:, 0, :]
+        
+        decoded_batch = tokenizer.batch_decode(first_gens, skip_special_tokens=True)
+        all_completions.extend(decoded_batch)
             
-    # Post-processing
-    for raw_prompt, prefix, generations in zip(csv_prompts, decoded_prefixes, all_text_chunks, strict=True):
+    for raw_prompt, completion in zip(csv_prompts, all_completions, strict=True):
         clean_prompt = raw_prompt.replace('\n', '\\n')
         responses_dict["prompt"].append(clean_prompt)
         
-        full_generation = generations[0] if generations else ""
-        
-        if full_generation.startswith(prefix):
-            clean_completion = full_generation[len(prefix):]
-        else:
-            clean_completion = full_generation
-
-        clean_completion = clean_completion.strip().replace('\n', '\\n')
-
+        clean_completion = completion.strip().replace('\n', '\\n')
         responses_dict["completion"].append(clean_completion)
 
     responses = pd.DataFrame.from_dict(responses_dict)

@@ -9,7 +9,6 @@ class BaseEstimator:
 
     def __call__(
         self,
-        input_text: str,
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
         logits: torch.Tensor,
@@ -23,7 +22,6 @@ class RandomEstimator(BaseEstimator):
     
     def __call__(
         self,
-        input_text: str,
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
         logits: torch.Tensor,
@@ -47,7 +45,6 @@ class MSP(BaseEstimator):
 
     def __call__(
         self,
-        input_text: str,
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
         logits: torch.Tensor,
@@ -60,7 +57,6 @@ class MTE(BaseEstimator):
     
     def __call__(
         self,
-        input_text: str,
         input_ids: torch.Tensor,
         logprobs: torch.Tensor,
         logits: torch.Tensor,

@@ -13,6 +13,7 @@ from datasets import load_dataset
 from dotenv import load_dotenv
 from omegaconf import DictConfig
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+from datasets import DatasetDict
 from torch.optim import AdamW
 from transformers import (
     AutoModelForCausalLM,
@@ -32,10 +33,7 @@ from scripts.callback import (
 )
 from scripts.collator import DITTOCollator
 from scripts.utils import (
-    apply_chat_template,
     clone_adapter,
-    generate_rejected_responses,
-    process_dataset,
     seed_everything,
 )
 from scripts.estimator import ESTIMATOR_MAP
@@ -60,7 +58,6 @@ def main(config: DictConfig):
         attn_implementation=config.model["attn_implementation"],
         dtype=torch.bfloat16 if config.model["use_bf16"] else torch.float16,
         device_map="auto",
-        # max_memory={0: "60GiB"},
     )
     lora_config = LoraConfig(**OmegaConf.to_container(config.lora, resolve=True), task_type=TaskType.CAUSAL_LM)
     model = get_peft_model(model, lora_config, adapter_name="ref_model")
@@ -70,30 +67,18 @@ def main(config: DictConfig):
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.pad_token_id
 
-    # Prepare dataset
-    raw_datasets = load_dataset(config.dataset["name_or_path"])
-    train_dataset, eval_dataset = process_dataset(raw_datasets, config.dataset, logger)
-    train_dataset = train_dataset.add_column(
-        "example_id", list(range(len(train_dataset)))
+    # Prepare dataset; I love functional programming.
+    dataset: DatasetDict = (
+        load_dataset(config.dataset["name_or_path"])["train"]
+            .filter(lambda x: x["author_id"] == config.dataset.author_id)
+            .map(
+                lambda x: {
+                    "prompt": tokenizer.apply_chat_template(x["prompt"]),
+                    "chosen": tokenizer.apply_chat_template(x["prompt"] + x["chosen"]),
+                }
+            )
+            .shuffle(seed=config.seed)[:config.dataset.train_samples_per_author]
     )
-    # eval_dataset = eval_dataset.add_column("example_id", list(range(len(eval_dataset))))
-    # eval_dataset = generate_rejected_responses(
-    #     eval_dataset, model, tokenizer, config.dataset, logger
-    # )
-
-    def _format_example(example):
-        return apply_chat_template(example, tokenizer)
-
-    sft_train_dataset = train_dataset.map(
-        _format_example,
-        num_proc=0,
-        desc="Applying chat template to train split",
-    )
-    # sft_eval_dataset = eval_dataset.map(
-    #     _format_example,
-    #     num_proc=0,
-    #     desc="Applying chat template to eval split",
-    # )
 
     if enable_wandb := config.wandb["enabled"]:
         config.wandb.__delattr__("enabled")
@@ -104,8 +89,7 @@ def main(config: DictConfig):
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
-        train_dataset=sft_train_dataset,
-        # eval_dataset=sft_eval_dataset,
+        train_dataset=dataset,
         args=SFTConfig(
             output_dir=run_dir,
             report_to="wandb" if enable_wandb else "none",
@@ -158,17 +142,17 @@ def main(config: DictConfig):
                 ref_adapter_name="ref_model",
                 push_to_hub=config.push_to_hub,
                 hub_model_id=full_repo_id,
+                remove_unused_columns=False,
                 **config.training_args.dpo,
                 **config.training_args.general,
             ),
             optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
             processing_class=tokenizer,
-            train_dataset=train_dataset,
-            # eval_dataset=eval_dataset,
+            train_dataset=dataset,
             data_collator=data_collator,
             callbacks=[
                 ResampleCallback(
-                    model, tokenizer, train_dataset, data_collator, config.sampler
+                    model, tokenizer, dataset, data_collator, config.sampler
                 ),
             ],
         )
