@@ -1,6 +1,7 @@
 import gc
 import os
 import sys
+import json
 import logging
 from pathlib import Path
 from typing import cast
@@ -13,7 +14,6 @@ from datasets import load_dataset
 from dotenv import load_dotenv
 from omegaconf import DictConfig
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
-from datasets import DatasetDict
 from torch.optim import AdamW
 from transformers import (
     AutoModelForCausalLM,
@@ -44,6 +44,114 @@ logger = logging.getLogger(__name__)
 logging.getLogger("transformers.pipelines").setLevel(logging.WARNING)
 
 
+def standardize_messages(data, default_role):
+    """Normalize prompt/response fields into a list[dict(role, content)]."""
+    if data is None:
+        return []
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data
+    if isinstance(data, str):
+        data = data.strip()
+        if data.startswith("[") or data.startswith("{"):
+            try:
+                loaded = json.loads(data)
+                if isinstance(loaded, list):
+                    return loaded
+                if isinstance(loaded, dict):
+                    return [loaded]
+            except json.JSONDecodeError:
+                pass
+        return [{"role": default_role, "content": data}]
+    if isinstance(data, list) and data and isinstance(data[0], str):
+        return [{"role": default_role, "content": "\n".join(data)}]
+    return []
+
+
+def resolve_history(prompt_msgs, response_msgs):
+    """Merge prompt and response while avoiding duplicated roles at the boundary."""
+    if not response_msgs:
+        return prompt_msgs if prompt_msgs else []
+    if response_msgs[0]["role"] in ["user", "system"]:
+        return response_msgs
+    if prompt_msgs and response_msgs[0]["role"] == prompt_msgs[-1]["role"]:
+        return response_msgs
+    return prompt_msgs + response_msgs
+
+def format_sft(example, tokenizer):
+    """Format a single example for SFT (returns 'text')."""
+    prompt_list = standardize_messages(example["prompt"], default_role="user")
+    chosen_list = standardize_messages(example["chosen"], default_role="assistant")
+
+    full_conversation = resolve_history(prompt_list, chosen_list) or (prompt_list + chosen_list)
+
+    return {
+        "text": tokenizer.apply_chat_template(full_conversation, tokenize=False)
+    }
+
+def format_dpo_smart(example, tokenizer):
+    """Format a single example for DPO/DITTO with explicit BOS handling."""
+
+    prompt_list = standardize_messages(example["prompt"], default_role="user")
+    chosen_list = standardize_messages(example["chosen"], default_role="assistant")
+    rejected_list = standardize_messages(example.get("rejected"), default_role="assistant")
+
+    final_chosen = resolve_history(prompt_list, chosen_list) or (prompt_list + chosen_list)
+
+    prompt_str = tokenizer.apply_chat_template(
+        prompt_list, tokenize=False, add_generation_prompt=True
+    )
+    chosen_str = tokenizer.apply_chat_template(final_chosen, tokenize=False)
+
+    rejected_str = ""
+    if rejected_list:
+        final_rejected = resolve_history(prompt_list, rejected_list)
+        if final_rejected:
+            rejected_str = tokenizer.apply_chat_template(final_rejected, tokenize=False)
+
+    def enforce_clean_bos(text: str) -> str:
+        if not text:
+            return text
+        text = text.replace("<s>", "").replace("</s>", "")
+        text = text.lstrip()
+        return tokenizer.bos_token + text
+
+    clean_prompt = enforce_clean_bos(prompt_str)
+    clean_chosen = enforce_clean_bos(chosen_str)
+    clean_rejected = enforce_clean_bos(rejected_str) if rejected_str else ""
+
+    return {
+        "prompt": clean_prompt,
+        "chosen": clean_chosen,
+        "rejected": clean_rejected,
+    }
+
+
+def load_author_subset(config):
+    """Load and trim the dataset to the configured author/sample count."""
+    raw_dataset = (
+        load_dataset(config.dataset["name_or_path"])["train"]
+        .filter(lambda x: x["author_id"] == config.dataset.author_id)
+        .shuffle(seed=config.seed)
+    )
+
+    num_samples = min(config.dataset.train_samples_per_author, len(raw_dataset))
+    return raw_dataset.select(range(num_samples))
+
+
+def build_sft_dataset(raw_dataset, tokenizer):
+    return raw_dataset.map(
+        format_sft,
+        fn_kwargs={"tokenizer": tokenizer},
+        remove_columns=raw_dataset.column_names,
+    )
+
+
+def build_dpo_dataset(raw_dataset, tokenizer):
+    return raw_dataset.map(
+        format_dpo_smart,
+        fn_kwargs={"tokenizer": tokenizer},
+    )
+        
 @hydra.main(version_base=None, config_path="../configs", config_name="ditto")
 def main(config: DictConfig):
     load_dotenv()
@@ -67,18 +175,16 @@ def main(config: DictConfig):
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.pad_token_id
 
-    # Prepare dataset; I love functional programming.
-    dataset: DatasetDict = (
-        load_dataset(config.dataset["name_or_path"])["train"]
-            .filter(lambda x: x["author_id"] == config.dataset.author_id)
-            .map(
-                lambda x: {
-                    "prompt": tokenizer.apply_chat_template(x["prompt"]),
-                    "chosen": tokenizer.apply_chat_template(x["prompt"] + x["chosen"]),
-                }
-            )
-            .shuffle(seed=config.seed)[:config.dataset.train_samples_per_author]
-    )
+    # 1. Load Raw Data
+    raw_dataset = load_author_subset(config)
+
+    # 2. Prepare SFT Dataset (Uses format_sft -> Returns "text")
+    logger.info("Formatting dataset for SFT...")
+    sft_dataset = build_sft_dataset(raw_dataset, tokenizer)
+
+    # 3. Prepare DPO Dataset (Uses format_dpo_smart -> Returns prompt/chosen/rejected)
+    logger.info("Formatting dataset for DITTO/DPO...")
+    dpo_dataset = build_dpo_dataset(raw_dataset, tokenizer)
 
     if enable_wandb := config.wandb["enabled"]:
         config.wandb.__delattr__("enabled")
@@ -89,7 +195,7 @@ def main(config: DictConfig):
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
-        train_dataset=dataset,
+        train_dataset=sft_dataset,
         args=SFTConfig(
             output_dir=run_dir,
             report_to="wandb" if enable_wandb else "none",
@@ -148,11 +254,11 @@ def main(config: DictConfig):
             ),
             optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
             processing_class=tokenizer,
-            train_dataset=dataset,
+            train_dataset=dpo_dataset,
             data_collator=data_collator,
             callbacks=[
                 ResampleCallback(
-                    model, tokenizer, dataset, data_collator, config.sampler
+                    model, tokenizer, dpo_dataset, data_collator, config.sampler
                 ),
             ],
         )

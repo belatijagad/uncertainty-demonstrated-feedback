@@ -55,13 +55,13 @@ class ResampleCallback(TrainerCallback):
             return
 
         if step_num % self.config.get("resample_rate", 50) == 0:
-            self.model.train()
+            self.model.eval()
             self.collator.resample(
                 step=step_num,
                 model=self.model,
                 tokenizer=self.tokenizer,
                 dataset=self.dataset,
             )
-            self.model.eval()
+            self.model.train()
 
         self.last_step_num = step_num

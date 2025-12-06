@@ -28,13 +28,21 @@ def generate_model_outputs(
     *,
     gen_kwargs: dict[str, Any],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(model.device)
+    tokenizer.padding_side = "left"
+    inputs = tokenizer(
+        prompts, 
+        return_tensors="pt", 
+        padding=True, 
+        add_special_tokens=False 
+    ).to(model.device)
+
     prompt_len = inputs["input_ids"].shape[1]
 
     with torch.inference_mode():
         outputs = model.generate(
-            **inputs,
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"], # Explicitly pass mask for left-padding safety
+            pad_token_id=tokenizer.pad_token_id,
             output_scores=True,
             return_dict_in_generate=True,
             **gen_kwargs,
@@ -48,10 +56,14 @@ def generate_model_outputs(
         normalize_logits=False,
     ).cpu()
 
+    if torch.cuda.is_available():
+        del inputs
+        torch.cuda.empty_cache()
+
     batch_size = len(prompts)
     num_return_sequences = gen_kwargs.get("num_return_sequences", 1)
 
-    prompt_input_ids = inputs["input_ids"].cpu()
+    prompt_input_ids = outputs.sequences[:, :prompt_len].cpu()
 
     generated_sequences = outputs.sequences[:, prompt_len:]
     generated_input_ids = (
@@ -67,10 +79,5 @@ def generate_model_outputs(
     logits_view = raw_logits.contiguous().view(
         batch_size, num_return_sequences, -1, raw_logits.size(-1)
     )
-    
-    if torch.cuda.is_available():
-        del outputs
-        del inputs
-        torch.cuda.empty_cache()
 
     return prompt_input_ids, generated_input_ids, scores_view, logits_view
