@@ -1,10 +1,10 @@
 defaults:
-  - model: ministral-8b
+  - model: mistral-7b
   - _self_
 
 seed: 42
 
-push_to_hub: true
+push_to_hub: false
 
 hydra:
   run:
@@ -53,11 +53,10 @@ training_args:
   dpo:
     warmup_steps: 10
     max_steps: 40
-    max_length: 2048
-    max_prompt_length: 512
+    max_length: 1024
     gradient_checkpointing: true
-    per_device_train_batch_size: 2
-    gradient_accumulation_steps: 2
+    per_device_train_batch_size: 4
+    gradient_accumulation_steps: 1
     padding_free: true
 
 optim_args:
@@ -70,12 +69,15 @@ optim_args:
 
 sampler:
   resample_rate: 10
-  frac_expert: 0.7
-  frac_replay: 0.2
-  frac_noisy: 0.1
+  frac_expert: 0.675
+  frac_replay: 0.25
+  frac_noisy: 0.125
   rescale_batch: 2
 
   gen_kwargs:
     do_sample: true
-    num_return_sequences: 8
+    max_length: 1024
+    num_return_sequences: 4
+    temperature: 1.2
+    repetition_penalty: 1.1
     cache_implementation: offloaded

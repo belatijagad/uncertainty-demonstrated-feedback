@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import cast
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import hydra
 from omegaconf import OmegaConf
 import torch
@@ -14,6 +16,7 @@ from datasets import load_dataset
 from dotenv import load_dotenv
 from omegaconf import DictConfig
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+from bitsandbytes.optim import PagedAdamW
 from torch.optim import AdamW
 from transformers import (
     AutoModelForCausalLM,
@@ -155,7 +158,6 @@ def build_dpo_dataset(raw_dataset, tokenizer):
 @hydra.main(version_base=None, config_path="../configs", config_name="ditto")
 def main(config: DictConfig):
     load_dotenv()
-    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     seed_everything(config["seed"])
 
     run_dir = hydra.core.hydra_config.HydraConfig.get()['runtime']['output_dir']
@@ -211,6 +213,7 @@ def main(config: DictConfig):
 
     del trainer
     gc.collect()
+    torch.cuda.empty_cache()
 
     # Test all uncertainty methods at once
     repo_username = "belati"
@@ -219,6 +222,8 @@ def main(config: DictConfig):
 
     tokenizer.padding_side = "left"
     for name, estimator in ESTIMATOR_MAP.items():
+        if name != "None":
+            continue
         logger.info(f"Preparing DITTO training for method: {name}")
         
         adapter_name = f"{name}_policy_model"
@@ -252,6 +257,7 @@ def main(config: DictConfig):
                 **config.training_args.dpo,
                 **config.training_args.general,
             ),
+            # optimizer_cls_and_kwargs=(PagedAdamW, config.optim_args.dpo),
             optimizer_cls_and_kwargs=(AdamW, config.optim_args.dpo),
             processing_class=tokenizer,
             train_dataset=dpo_dataset,

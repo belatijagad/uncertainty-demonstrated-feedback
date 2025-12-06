@@ -63,7 +63,12 @@ def generate_model_outputs(
     batch_size = len(prompts)
     num_return_sequences = gen_kwargs.get("num_return_sequences", 1)
 
-    prompt_input_ids = outputs.sequences[:, :prompt_len].cpu()
+    prompt_input_ids = (
+        outputs.sequences[:, :prompt_len]
+        .cpu()
+        .contiguous()
+        .view(batch_size, num_return_sequences, -1)
+    )
 
     generated_sequences = outputs.sequences[:, prompt_len:]
     generated_input_ids = (

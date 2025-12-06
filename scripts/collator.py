@@ -60,7 +60,6 @@ class DITTOCollator(DataCollatorForPreference):
 
     #     prompts = list(dataset["prompt"])
         
-    #     # TODO: finalize the utils generation
     #     (
     #         prompt_input_ids, 
     #         generated_input_ids, 
@@ -106,7 +105,7 @@ class DITTOCollator(DataCollatorForPreference):
         Generates new responses from the model, updates the cache, 
         and logs decoded text to generations.txt.
         """
-        import os  # Ensure os is imported
+        import os
         
         self.sampled_step = step
         self.cache.setdefault(step, {})
@@ -129,7 +128,6 @@ class DITTOCollator(DataCollatorForPreference):
         # Open file in Append mode
         log_file = "generations.txt"
         with open(log_file, "a", encoding="utf-8") as f:
-            # Add a header for the current step
             f.write(f"\n{'='*20} STEP {step} {'='*20}\n")
 
             for prompt, pr_ids, gen_ids, scores, logits in zip(
@@ -139,28 +137,24 @@ class DITTOCollator(DataCollatorForPreference):
             ):
                 cache_slot = self.cache[step].setdefault(prompt, [])
 
-                # Iterate over num_return_sequences (inner loop)
-                # Note: pr_ids is the prompt tensor, we don't zip it here or we'd iterate over tokens.
-                # We use the full pr_ids for every generation variant.
+                # pr_ids shape is (Num_Return_Sequences, Prompt_Len)
+                # We only need the 1D sequence for the cache.
+                single_prompt_tensor = pr_ids[0] 
+
                 for gen_id, score, logit in zip(gen_ids, scores, logits, strict=True):
                     
-                    # 1. Calculate Score
                     calculated_score = self.estimator(gen_id, score, logit)
-                    
-                    # 2. Decode for Logging
                     decoded_response = tokenizer.decode(gen_id, skip_special_tokens=True)
                     
-                    # 3. Write to file
                     f.write(f"[PROMPT]: {prompt}\n")
                     f.write(f"[OUTPUT]: {decoded_response}\n")
                     f.write(f"[SCORE]:  {calculated_score:.4f}\n")
                     f.write("-" * 40 + "\n")
 
-                    # 4. Update Cache
                     cache_slot.append(
                         {
                             "score": calculated_score,
-                            "prompt_input_ids": pr_ids, # Store the full prompt tensor
+                            "prompt_input_ids": single_prompt_tensor, # <--- FIXED: Now 1D
                             "generated_input_ids": gen_id,
                         }
                     )
